@@ -1,0 +1,214 @@
+name: Build Ubuntu 26.04 BBRv3 kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_version:
+        description: 'Ubuntu linux source version, e.g. 7.0.0-30.30; use auto for the newest 7.0.0 ABI'
+        required: true
+        default: '7.0.0-30.30'
+        type: string
+      force:
+        description: 'Rebuild even if a release with this tag already exists'
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: '23 2 * * *'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: ubuntu-2604-bbrv3-kernel
+  cancel-in-progress: false
+
+env:
+  UBUNTU_KERNEL_REPOSITORY: https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/resolute
+
+jobs:
+  plan:
+    name: Resolve Ubuntu kernel source
+    runs-on: ubuntu-24.04
+    outputs:
+      source_version: ${{ steps.resolve.outputs.source_version }}
+      source_tag: ${{ steps.resolve.outputs.source_tag }}
+      custom_abi: ${{ steps.resolve.outputs.custom_abi }}
+      kernel_release: ${{ steps.resolve.outputs.kernel_release }}
+      package_version: ${{ steps.resolve.outputs.package_version }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      build_needed: ${{ steps.release.outputs.build_needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        name: Resolve source version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            requested_version="${{ inputs.source_version }}"
+          else
+            requested_version="auto"
+          fi
+          ./scripts/resolve-source.sh "$requested_version"
+
+      - id: release
+        name: Skip an already-published source ABI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          force_build="false"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            force_build="${{ inputs.force }}"
+          fi
+
+          if [[ "$force_build" != "true" ]] && \
+             gh release view "${{ steps.resolve.outputs.release_tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+            echo "Release already exists; no rebuild is needed."
+          else
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ needs.plan.outputs.source_version }} (amd64)
+    needs: plan
+    if: needs.plan.outputs.build_needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: ubuntu:26.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    env:
+      SOURCE_VERSION: ${{ needs.plan.outputs.source_version }}
+      SOURCE_TAG: ${{ needs.plan.outputs.source_tag }}
+      CUSTOM_ABI: ${{ needs.plan.outputs.custom_abi }}
+      KERNEL_RELEASE: ${{ needs.plan.outputs.kernel_release }}
+      PACKAGE_VERSION: ${{ needs.plan.outputs.package_version }}
+      RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Bootstrap Ubuntu 26.04 build container
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git curl jq
+          if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+            sed -i -E 's/^Types:[[:space:]]*deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          else
+            echo 'ERROR: Ubuntu deb-src configuration file was not found.' >&2
+            exit 1
+          fi
+          apt-get update
+          apt-get build-dep -y --no-install-recommends linux
+          apt-get clean
+
+      - uses: actions/checkout@v4
+
+      - name: Show available disk space
+        shell: bash
+        run: df -h /
+
+      - name: Fetch the exact Ubuntu kernel source tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "$SOURCE_TAG" "$UBUNTU_KERNEL_REPOSITORY" kernel
+          cd kernel
+          test "$(dpkg-parsechangelog -l debian.master/changelog -S Version)" = "$SOURCE_VERSION"
+          git describe --exact-match --tags HEAD | grep -Fx "$SOURCE_TAG"
+
+      - name: Apply and validate full BBRv3 TCP-stack patch
+        shell: bash
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          echo 'PATCH_PORT_REQUIRED=false' >> "$GITHUB_ENV"
+          if ! "$GITHUB_WORKSPACE/scripts/apply-bbrv3.sh" "$SOURCE_VERSION"; then
+            echo 'PATCH_PORT_REQUIRED=true' >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+      - name: Open a porting issue if the patch no longer applies
+        if: failure() && env.PATCH_PORT_REQUIRED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="BBRv3 port required: Ubuntu $SOURCE_VERSION"
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/issues"
+          existing="$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api?state=open&per_page=100" |
+            jq -r --arg title "$title" '.[] | select(.title == $title) | .number' |
+            head -n 1)"
+          if [[ -n "$existing" ]]; then
+            echo "Porting issue #$existing is already open."
+            exit 0
+          fi
+          body="The BBRv3 patch did not pass exact git apply validation for Ubuntu source $SOURCE_VERSION. No kernel artifact was published. Rebase and validate a new patches/bbrv3-ubuntu-$SOURCE_VERSION.patch, then re-run the workflow."
+          payload="$(jq -n --arg title "$title" --arg body "$body" '{title: $title, body: $body}')"
+          curl --fail-with-body --request POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" \
+            --data "$payload"
+
+      - name: Give the package a non-conflicting custom ABI
+        shell: bash
+        working-directory: kernel
+        run: "$GITHUB_WORKSPACE/scripts/customize-ubuntu-package.sh" "$SOURCE_VERSION" "$CUSTOM_ABI"
+
+      - name: Build Ubuntu generic kernel Debian packages
+        shell: bash
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
+          fakeroot debian/rules binary-generic \
+            do_mainline_build=true \
+            do_dbgsym_package=false \
+            do_tools=false \
+            do_source_package=false
+
+      - name: Collect and verify packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Eq '^CONFIG_TCP_CONG_BBR=(m|y)$' kernel/debian/build/build-generic/.config
+          grep -Eq '^CONFIG_NET_SCH_FQ=(m|y)$' kernel/debian/build/build-generic/.config
+          mkdir -p release
+          find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.deb' -exec cp -t release {} +
+          "$GITHUB_WORKSPACE/scripts/verify-artifacts.sh" \
+            "$GITHUB_WORKSPACE/release" \
+            "$KERNEL_RELEASE" \
+            "$PACKAGE_VERSION" \
+            "$SOURCE_VERSION"
+          printf '%s\n' "Ubuntu source tag: $SOURCE_TAG" "Source commit: $(git -C kernel rev-parse HEAD)" > release/BUILD-METADATA.txt
+          ls -lh release
+
+      - name: Upload packages as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
+          path: release/
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.release_tag }}
+          name: Ubuntu 26.04 BBRv3 — ${{ needs.plan.outputs.source_version }}
+          body_path: release/RELEASE-NOTES.md
+          files: |
+            release/*.deb
+            release/SHA256SUMS
+            release/BUILD-METADATA.txt
+          overwrite_files: true
