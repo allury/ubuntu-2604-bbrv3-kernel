@@ -148,6 +148,7 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: zfs-preflight-${{ github.run_attempt }}
+          retention-days: 1
           path: |
             preflight/zfs.log
             preflight/output/diagnostics/
@@ -317,6 +318,7 @@ jobs:
         with:
           name: core-checkpoint
           path: checkpoint/
+          retention-days: 1
           if-no-files-found: error
           compression-level: 0
           overwrite: true
@@ -337,6 +339,7 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
         with:
           name: zfs-diagnostics-${{ github.run_attempt }}
+          retention-days: 1
           path: release/diagnostics/
           if-no-files-found: ignore
 
@@ -379,6 +382,7 @@ jobs:
           name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
           path: release/
           if-no-files-found: error
+          retention-days: 1
           compression-level: 0
 
   install-check:
@@ -560,6 +564,7 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: qemu-console-${{ needs.plan.outputs.source_version }}
+          retention-days: 1
           path: qemu-console.log
           if-no-files-found: ignore
 
