@@ -3,3 +3,11 @@ kernel/
 *.deb
 *.buildinfo
 *.changes
+/checkpoint/
+/preflight/
+/qemu/
+/qemu-console.log
+__pycache__/
+*.pyc
+*.pem
+*.key

@@ -14,4 +14,4 @@ Linux 7.0 移植基线来自 [`byJoey/Actions-bbr-v3`](https://github.com/byJoey
 
 工作流允许将此基线补丁用于后续的 Ubuntu 源码版本，前提是它先通过**精确** `git apply --check --whitespace=error`，再通过完整编译和 artifact 验证。它不会使用 `patch -f`、三路模糊合并或只编译单模块的回退方案。
 
-若新的 Ubuntu 版本无法精确应用该补丁，CI 会停止发布并创建 porting issue。完成真实移植后，应新增 `bbrv3-ubuntu-<source-version>.patch`，验证后提高 `scripts/resolve-source.sh` 里的 `patch_revision`，从而生成新的不可变 Release 标签。
+若新的 Ubuntu 版本无法精确应用该补丁，CI 会停止发布并创建 porting issue。完成真实移植后，应新增 `bbrv3-ubuntu-<source-version>.patch`，验证后提高 `scripts/resolve-source.sh` 里的 `patch_revision`，生成新的 Release 标签，不覆盖已有版本。这是项目发布约定，不代表 GitHub 已启用不可变发布锁定。

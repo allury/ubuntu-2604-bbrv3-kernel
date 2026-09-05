@@ -6,6 +6,8 @@
 
 [查看正式版本](https://github.com/allury/ubuntu-2604-bbrv3-kernel/releases/latest)
 
+目录职责、验证记录和后续维护方式见 [维护说明](docs/MAINTENANCE.md)。
+
 ## 安装
 
 要求 Ubuntu 26.04、amd64、systemd 与 GRUB，适用于物理机和可更换内核的全虚拟化 VPS，不适用于共享宿主机内核的容器。需安装 curl、python3；启用 Secure Boot 的机器不能直接使用这些未签名内核镜像。
