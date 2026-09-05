@@ -20,8 +20,8 @@ sudo bash download-and-install.sh --reboot
 
 安装前置条件（脚本自检，不满足将拒绝执行）：
 
-- 系统中至少保留一个可启动的 Canonical 原装 generic 内核作为回退，缺失时可通过 `sudo apt-get install linux-image-generic` 补装；
-- dpkg 状态健康，`sudo dpkg --audit` 输出为空。
+- 系统中至少保留一个可启动的 Canonical 原装 generic 内核作为回退，缺失时可通过 `sudo apt-get install linux-image-generic` 补装；确认风险后可向安装器传入 `--allow-no-fallback` 跳过此检查（`download-and-install.sh` 支持同名参数透传），此时系统无回退内核，启动失败需依赖服务商救援控制台恢复；
+- dpkg 状态健康，`sudo dpkg --audit` 输出为空（此项不提供跳过途径）。
 
 重启完成后验证运行状态：
 
