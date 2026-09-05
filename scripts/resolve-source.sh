@@ -53,7 +53,7 @@ validate_ubuntu_archive_policy() {
       for (u = 1; u <= count_uri; u++)
         for (s = 1; s <= count_suite; s++)
           if (uri_values[u] != "" && suite_values[s] != "")
-            print uri_values[u] "\\t" suite_values[s]
+            print uri_values[u] "\t" suite_values[s]
     }
   ' "$source_file")"
   [[ -n "$source_entries" ]] || die "No enabled Ubuntu deb archive source was found."

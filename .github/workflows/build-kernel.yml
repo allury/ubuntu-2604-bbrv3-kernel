@@ -44,6 +44,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          test -f "$sources"
+          sed -i -E 's/(^Suites:.*) resolute-backports/\1/' "$sources"
+          ! grep -Eq '^Suites:.*(^|[[:space:]])resolute-(backports|proposed)([[:space:]]|$)' "$sources"
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git jq
 
@@ -114,16 +118,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          test -f "$sources"
+          sed -i -E 's/(^Suites:.*) resolute-backports/\1/' "$sources"
+          ! grep -Eq '^Suites:.*(^|[[:space:]])resolute-(backports|proposed)([[:space:]]|$)' "$sources"
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl dkms dpkg-dev fakeroot file git jq kmod \
             libc6-dev libpython3-stdlib lsb-release xz-utils zstd
-          if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
-            sed -i -E 's/^Types:[[:space:]]*deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-          else
-            echo 'ERROR: Ubuntu deb-src configuration file was not found.' >&2
-            exit 1
-          fi
+          sed -i -E 's/^Types:[[:space:]]*deb$/Types: deb deb-src/' "$sources"
           apt-get update
           apt-get build-dep -y --no-install-recommends linux
           apt-get clean
