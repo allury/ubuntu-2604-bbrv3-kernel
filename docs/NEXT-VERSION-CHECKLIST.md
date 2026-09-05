@@ -44,9 +44,10 @@
 - README：当前版本号、内核 release、来源表中补丁来源改为"基于 Google 官方 v3 源码自行移植"；
 - 本文件与 `NEXT-STEPS-5.6.md`：追加 run id、Release tag、日期、包版本、ZFS 源版本与 SHA-256。
 
-### 安装器改进（随下一版实现）
+### 安装器改进（已实现）
 
-- 为 `install-bbrv3.sh` 增加 `--allow-no-fallback` 显式跳过参数：默认仍强制要求 Canonical 原装回退内核，使用该参数时打印醒目风险警告（无回退内核时启动失败需服务商救援模式恢复）并继续安装。`dpkg --audit` 检查不提供跳过途径。
+- `install-bbrv3.sh` 已支持 `--allow-no-fallback` 显式跳过参数：默认仍强制要求 Canonical 原装回退内核，使用该参数时打印醒目风险警告（无回退内核时启动失败需服务商救援模式恢复）并继续安装；`download-and-install.sh` 同名参数可透传。`dpkg --audit` 检查不提供跳过途径。
+- `verify-artifacts.sh` 生成的 Release 说明（`RELEASE-NOTES.md`）已改为中文。
 
 ## 保持不变的部分
 
