@@ -21,6 +21,8 @@ sudo bash download-and-install.sh --reboot
 确认风险后跳过回退内核检查（系统将无回退内核，启动失败需依赖服务商救援控制台恢复）：
 
 ```bash
+curl -fsSLO https://github.com/allury/ubuntu-2604-bbrv3-kernel/raw/main/scripts/download-and-install.sh
+less download-and-install.sh
 sudo bash download-and-install.sh --allow-no-fallback --reboot
 ```
 
