@@ -19,12 +19,18 @@ die() {
 [[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)*\+bbrv3\.[1-9][0-9]*$ ]] ||
   die "Unexpected package version: $package_version"
 
-for tool in apt-cache apt-get dkms dpkg-deb dpkg-parsechangelog fakeroot md5sum modinfo sha256sum zstd; do
+for tool in apt-cache apt-get dkms dpkg-deb dpkg-parsechangelog fakeroot gcc md5sum modinfo sha256sum zstd; do
   command -v "$tool" >/dev/null || die "Missing build prerequisite: $tool"
 done
 
 kernel_tree="$(realpath "$kernel_tree")"
 output_dir="$(realpath "$output_dir")"
+# Ubuntu normally builds this host tool in stamp-prepare. Standalone DKMS
+# preflight/recovery must prepare it as well, before compiling any modules.
+if [[ ! -x "$kernel_tree/debian/scripts/fix-filenames" ]]; then
+  gcc -o "$kernel_tree/debian/scripts/fix-filenames" \
+    "$kernel_tree/debian/scripts/fix-filenames.c"
+fi
 abi_release="${kernel_release%-generic}"
 common_headers="$kernel_tree/debian/linux-headers-$abi_release/usr/src/linux-headers-$abi_release"
 flavour_headers="$kernel_tree/debian/linux-headers-$kernel_release/usr/src/linux-headers-$kernel_release"
