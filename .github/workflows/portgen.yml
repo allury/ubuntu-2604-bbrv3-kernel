@@ -86,21 +86,6 @@ jobs:
           set -euo pipefail
           source_version="${SOURCE_TAG#Ubuntu-}"
           source_version="${source_version%%-*}"
-          cat > /tmp/port-audit.py <<'PY'
-import collections
-import pathlib
-for rel in sorted(p for p in pathlib.Path('ported').rglob('*') if p.is_file()):
-    r = str(rel.relative_to('ported'))
-    g = pathlib.Path('google') / r
-    if not g.exists():
-        print(f"{r}: no google counterpart (expected for tcp_ecn.h routing)")
-        continue
-    a = collections.Counter(g.read_text().splitlines())
-    b = collections.Counter(rel.read_text().splitlines())
-    only_g = sum((a - b).values())
-    only_p = sum((b - a).values())
-    print(f"{r}: googleOnly={only_g} portOnly={only_p}")
-PY
           # Reference tree: base + the currently shipped patch.
           cp -a base reference
           git -C reference apply --whitespace=error "$GITHUB_WORKSPACE/patches/bbrv3-ubuntu-${source_version}.patch"
@@ -116,7 +101,7 @@ PY
             done < <(find ported -type f -printf '%P\n')
             echo
             echo "== multiset delta: self-ported vs Google v3 final files =="
-            python3 /tmp/port-audit.py
+            python3 scripts/port-audit.py ported google
           } > audit-report.txt
           head -80 audit-report.txt
       - name: Preserve outputs
