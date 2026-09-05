@@ -98,6 +98,7 @@ KCONFIG_BBR1_MARKERS = (
 )
 
 report = []
+failures = []
 
 
 def note(kind, path, detail):
@@ -167,6 +168,28 @@ def norm(line):
     return " ".join(line.split())
 
 
+# Structurally diverged hunks that generic context matching cannot place.
+# Each rule names a file and a substring that identifies the affected hunk,
+# plus an explicit deterministic handler on the Ubuntu base lines.
+def override_tcp_h_bitfield(base_lines):
+    """7.0 merged recvmsg_inq into a shared u8 bitfield and renamed the
+    cacheline groups; carry Google's fast_ack_mode bit into that field."""
+    target = "\t\trecvmsg_inq : 1;/* Indicate # of bytes in queue upon recvmsg */"
+    try:
+        idx = base_lines.index(target)
+    except ValueError:
+        raise SystemExit(
+            "override_tcp_h_bitfield: anchor not found in include/linux/tcp.h")
+    base_lines[idx] = "\t\trecvmsg_inq : 1,/* Indicate # of bytes in queue upon recvmsg */"
+    base_lines.insert(idx + 1, "\t\tfast_ack_mode:1;/* ack ASAP if >1 rcv_mss received? */")
+    return base_lines
+
+
+HUNK_OVERRIDES = [
+    ("include/linux/tcp.h", "recvmsg_inq", override_tcp_h_bitfield),
+]
+
+
 def block_matches(window, old):
     """True when a base window corresponds to a 6.13-era hunk context,
     accounting for the documented adaptations and whitespace drift."""
@@ -183,7 +206,10 @@ def block_matches(window, old):
 
 
 def apply_hunks(base_lines, hunks, path):
-    """Place hunks by matching their context, in order, into base_lines."""
+    """Place hunks by matching their context, in order, into base_lines.
+
+    Unplaceable hunks are recorded in the global failure list so one run
+    surfaces every remaining divergence instead of only the first."""
     result = list(base_lines)
     cursor = 0
     for ostart, old, new in hunks:
@@ -207,9 +233,29 @@ def apply_hunks(base_lines, hunks, path):
                     note("adapt", path, f"adapted-context hunk at base line {i + 1}")
                     break
         if not placed:
-            raise SystemExit(
-                f"UNRESOLVED hunk in {path}: old={old!r}")
+            failures.append(f"UNRESOLVED hunk in {path}: old={old[:6]!r}")
     return result
+
+
+def split_overrides(rel, hunks):
+    """Partition hunks into (remaining, unique_handlers) per HUNK_OVERRIDES."""
+    remaining = []
+    handlers = []
+    for hunk in hunks:
+        ostart, old, new = hunk
+        joined = "\n".join(old + new)
+        matched = None
+        for f, key, handler in HUNK_OVERRIDES:
+            if f == rel and key in joined:
+                matched = handler
+                break
+        if matched is not None:
+            if matched not in handlers:
+                handlers.append(matched)
+            note("override", rel, f"hunk consumed by {matched.__name__}")
+        else:
+            remaining.append(hunk)
+    return remaining, handlers
 
 
 def port_tcp_bbr(google_lines):
@@ -299,11 +345,18 @@ def main():
             note("adapt", rel, "tcp_ecn_send_syn hunks routed to include/net/tcp_ecn.h")
         else:
             diff = list(difflib.unified_diff(vanilla_lines, google_lines, lineterm="", n=3))
-            ported = apply_hunks(read(base_p), parse_hunks(diff), rel)
+            hunks, handlers = split_overrides(rel, parse_hunks(diff))
+            base_lines = read(base_p)
+            for handler in handlers:
+                base_lines = handler(base_lines)
+            ported = apply_hunks(base_lines, hunks, rel)
 
         write(out_root / rel, ported)
 
     pathlib.Path("porting-report.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+    if failures:
+        print("\n".join(failures), file=sys.stderr)
+        raise SystemExit(f"{len(failures)} unresolved hunks; extend HUNK_OVERRIDES/LINE_SUBSTITUTIONS")
     print(f"ported {len(FILES)} files; {len(report)} report lines")
 
 
