@@ -1,5 +1,14 @@
 # GPT-5.6 接手操作单（2026-09-05）
 
+## p2 构建结果（2026-09-05 回填）
+
+- Run：https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/33967676484（六 job 全绿，含首次运行的 install-check 与 QEMU boot-smoke）
+- Release：https://github.com/allury/ubuntu-2604-bbrv3-kernel/releases/tag/ubuntu-26.04-bbrv3-7.0.0-30.30-p2（稳定版，非 prerelease）
+- 内核 release：`7.0.0-13002-generic`；包版本：`7.0.0-13002.30+bbrv3.2`
+- 关键修复：Release 包含真实 `linux-main-modules-zfs-7.0.0-13002-generic`（本地签名 spl/zfs，vermagic 已验证），p1 的依赖缺陷已解决
+- 发布元数据确认：BBR 模块 version=3；selector 为 `bbr`
+- 同日完成第三方补丁等同性审计（docs/PATCH-AUDIT.md）与下版本自移植决策（docs/NEXT-VERSION-CHECKLIST.md）
+
 ## 用户已经完成的真实验收
 
 历史构建：https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/33938396949
