@@ -42,12 +42,22 @@ grep -Fxq 'CONFIG_MODULE_SIG=y' "$build_dir/.config" ||
   die 'The custom kernel does not enable module signatures.'
 
 work_dir="$(mktemp -d "$kernel_tree/debian/build/bbrv3-zfs.XXXXXX")"
-trap 'rm -rf "$work_dir"' EXIT
+cleanup() {
+  local status=$?
+  mkdir -p "$output_dir/diagnostics"
+  while IFS= read -r -d '' log; do
+    cp "$log" "$output_dir/diagnostics/$(basename "$(dirname "$log")")-$(basename "$log")"
+  done < <(find "$work_dir" -type f \( -name make.log -o -name config.log \) -print0)
+  rm -rf "$work_dir"
+  exit "$status"
+}
+trap cleanup EXIT
 dkms_dir="$work_dir/dkms"
 package_root="$work_dir/package"
 module_parent="$package_root/usr/lib/modules/$kernel_release/ubuntu/dkms"
 package_name="linux-main-modules-zfs-$kernel_release"
-mkdir -p "$dkms_dir/headers" "$module_parent" "$package_root/DEBIAN"
+mkdir -p "$dkms_dir/headers" "$dkms_dir/build" "$dkms_dir/source" "$module_parent" "$package_root/DEBIAN"
+[[ -w "$dkms_dir/build" && -w "$dkms_dir/source" ]] || die 'DKMS trees must be writable.'
 cp -a "$common_headers" "$flavour_headers" "$dkms_dir/headers/"
 
 zfs_resolution="$("$script_dir/resolve-zfs-source.sh")"
