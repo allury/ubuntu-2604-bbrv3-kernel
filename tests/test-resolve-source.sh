@@ -21,6 +21,11 @@ fi
 case "${1:-}" in
   depends)
     printf 'linux-image-generic\n  Depends: linux-image-%s-generic\n' "$image_release"
+    # Exceed the pipe buffer so a parser that exits early reliably makes this
+    # producer fail with SIGPIPE when the caller enables pipefail.
+    for ((i = 0; i < 12000; i++)); do
+      printf '  Suggests: unrelated-package-%s\n' "$i"
+    done
     ;;
   show)
     printf 'Package: linux-image-unsigned-%s-generic\n' "$image_release"

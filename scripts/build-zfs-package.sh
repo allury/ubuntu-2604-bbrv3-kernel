@@ -5,6 +5,7 @@ kernel_tree="${1:?Usage: build-zfs-package.sh <kernel-tree> <output-dir> <kernel
 output_dir="${2:?Usage: build-zfs-package.sh <kernel-tree> <output-dir> <kernel-release> <package-version>}"
 kernel_release="${3:?Usage: build-zfs-package.sh <kernel-tree> <output-dir> <kernel-release> <package-version>}"
 package_version="${4:?Usage: build-zfs-package.sh <kernel-tree> <output-dir> <kernel-release> <package-version>}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -49,9 +50,14 @@ package_name="linux-main-modules-zfs-$kernel_release"
 mkdir -p "$dkms_dir/headers" "$module_parent" "$package_root/DEBIAN"
 cp -a "$common_headers" "$flavour_headers" "$dkms_dir/headers/"
 
-zfs_candidate="$(apt-cache policy zfs-dkms | awk '/^[[:space:]]*Candidate:/ {print $2; exit}')"
-[[ -n "$zfs_candidate" && "$zfs_candidate" != '(none)' ]] ||
-  die 'Ubuntu APT metadata has no zfs-dkms candidate.'
+zfs_resolution="$("$script_dir/resolve-zfs-source.sh")"
+mapfile -t resolved_zfs_versions < <(
+  awk -F= '$1 == "zfs_source_version" { print $2 }' <<<"$zfs_resolution"
+)
+(( ${#resolved_zfs_versions[@]} == 1 )) ||
+  die "Expected one resolved ZFS source version, found ${#resolved_zfs_versions[@]}."
+zfs_candidate="${resolved_zfs_versions[0]}"
+printf 'Using released Ubuntu zfs-dkms %s.\n' "$zfs_candidate"
 (
   cd "$dkms_dir"
   apt-get download "zfs-dkms=$zfs_candidate"

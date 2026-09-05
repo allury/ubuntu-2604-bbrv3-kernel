@@ -57,7 +57,10 @@ jobs:
 
       - name: Test resolver behavior
         shell: bash
-        run: ./tests/test-resolve-source.sh
+        run: |
+          set -euo pipefail
+          ./tests/test-resolve-source.sh
+          ./tests/test-resolve-zfs-source.sh
 
       - id: resolve
         name: Resolve source version
@@ -65,6 +68,10 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.source_version }}
         shell: bash
         run: ./scripts/resolve-source.sh "${REQUESTED_VERSION:-auto}"
+
+      - name: Validate released Ubuntu OpenZFS source
+        shell: bash
+        run: ./scripts/resolve-zfs-source.sh
 
       - id: release
         name: Skip an already-published release
@@ -144,6 +151,10 @@ jobs:
           grep -Fxq "custom_abi=$CUSTOM_ABI" <<<"$resolved"
           grep -Fxq "kernel_release=$KERNEL_RELEASE" <<<"$resolved"
           grep -Fxq "package_version=$PACKAGE_VERSION" <<<"$resolved"
+
+      - name: Revalidate released Ubuntu OpenZFS source
+        shell: bash
+        run: ./scripts/resolve-zfs-source.sh
 
       - name: Show available disk space
         shell: bash

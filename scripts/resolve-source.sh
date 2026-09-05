@@ -105,7 +105,9 @@ source_version_from_linux_binary() {
 }
 
 latest_released_resolute_linux_version() {
+  local dependency_metadata
   local image_package
+  local -a image_packages
   local unsigned_image_package
   local source_version
 
@@ -117,12 +119,14 @@ latest_released_resolute_linux_version() {
 
   # Resolve the supported Ubuntu kernel from released APT metadata rather than
   # choosing the newest Launchpad Git tag, which may be unreleased.
-  image_package="$(
-    apt-cache depends linux-image-generic 2>/dev/null |
-      awk '$1 == "Depends:" && $2 ~ /^linux-image-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic$/ { print $2; exit }'
-  )"
-  [[ -n "$image_package" ]] ||
-    die "Could not resolve the linux-image-generic dependency from APT metadata."
+  dependency_metadata="$(apt-cache depends linux-image-generic 2>/dev/null)"
+  mapfile -t image_packages < <(
+    awk '$1 == "Depends:" && $2 ~ /^linux-image-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic$/ { print $2 }' \
+      <<<"$dependency_metadata"
+  )
+  (( ${#image_packages[@]} == 1 )) ||
+    die "Expected exactly one released linux-image-generic dependency, found ${#image_packages[@]}."
+  image_package="${image_packages[0]}"
 
   # A signed image may be sourced from linux-signed. Cross-check the matching
   # unsigned image, which must name the actual linux source package used here.
