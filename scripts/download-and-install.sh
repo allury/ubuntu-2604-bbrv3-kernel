@@ -13,6 +13,7 @@ die() {
 [[ $EUID == 0 ]] || die 'Run with sudo.'
 requested_tag='latest'
 reboot_option=''
+fallback_option=''
 while (( $# > 0 )); do
   case "$1" in
     --tag)
@@ -24,8 +25,12 @@ while (( $# > 0 )); do
       reboot_option='--reboot'
       shift
       ;;
+    --allow-no-fallback)
+      fallback_option='--allow-no-fallback'
+      shift
+      ;;
     -h|--help)
-      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot]\n' "$0"
+      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot] [--allow-no-fallback]\n' "$0"
       exit 0
       ;;
     *) die "Unknown option: $1" ;;
@@ -148,9 +153,8 @@ rm -f -- "$download_dir/release.json"
   cd "$download_dir"
   sha256sum --check --strict SHA256SUMS
   chmod 0755 download-and-install.sh enable-bbrv3.sh install-bbrv3.sh
-  if [[ -n "$reboot_option" ]]; then
-    bash ./install-bbrv3.sh install "$reboot_option"
-  else
-    bash ./install-bbrv3.sh install
-  fi
+  installer_args=(install)
+  if [[ -n "$reboot_option" ]]; then installer_args+=("$reboot_option"); fi
+  if [[ -n "$fallback_option" ]]; then installer_args+=("$fallback_option"); fi
+  bash ./install-bbrv3.sh "${installer_args[@]}"
 )
