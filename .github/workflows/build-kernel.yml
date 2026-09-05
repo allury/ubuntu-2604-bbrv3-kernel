@@ -203,6 +203,7 @@ jobs:
           cp -- "${generated_packages[@]}" release/
           install -m 0644 config/bbrv3.sysctl.conf release/bbrv3.sysctl.conf
           install -m 0755 scripts/enable-bbrv3.sh release/enable-bbrv3.sh
+          install -m 0755 scripts/install-bbrv3.sh release/install-bbrv3.sh
           install -m 0644 "patches/$BBRV3_PATCH_FILE" "release/$BBRV3_PATCH_FILE"
           "$GITHUB_WORKSPACE/scripts/verify-artifacts.sh" \
             "$GITHUB_WORKSPACE/release" \
@@ -216,6 +217,7 @@ jobs:
             printf '%s\n' "BBRv3 patch SHA256: $BBRV3_PATCH_SHA256"
             printf '%s\n' "Ubuntu source repository: $UBUNTU_KERNEL_REPOSITORY"
           } > release/BUILD-METADATA.txt
+          (cd release && sha256sum -- *.deb *.sh *.conf *.patch BUILD-METADATA.txt PACKAGE-MANIFEST.tsv > SHA256SUMS)
           ls -lh release
 
       - name: Upload packages as a workflow artifact
@@ -253,6 +255,7 @@ jobs:
             release/BUILD-METADATA.txt
             release/bbrv3.sysctl.conf
             release/enable-bbrv3.sh
+            release/install-bbrv3.sh
             release/*.patch
           )
           gh release create "$RELEASE_TAG" "${assets[@]}" \

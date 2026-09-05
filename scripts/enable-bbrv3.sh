@@ -39,11 +39,15 @@ module_vermagic="$(modinfo -F vermagic tcp_bbr || true)"
   printf 'ERROR: tcp_bbr module version is %s, expected BBRv3 version 3.\n' "${module_version:-missing}" >&2
   exit 1
 }
-[[ "$module_vermagic" == "$running_release"* ]] || {
+[[ "${module_vermagic%% *}" == "$running_release" ]] || {
   printf 'ERROR: tcp_bbr vermagic does not match the running kernel: %s\n' "${module_vermagic:-missing}" >&2
   exit 1
 }
 
+[[ "$(cat /sys/module/tcp_bbr/version)" == "3" ]] || {
+  printf 'ERROR: The loaded tcp_bbr module is not version 3.\n' >&2
+  exit 1
+}
 install -D -m 0644 "$config_file" /etc/sysctl.d/99-bbrv3.conf
 sysctl --system
 

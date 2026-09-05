@@ -35,6 +35,18 @@
 
 ## 安装到服务器
 
+新增一键辅助脚本 `scripts/install-bbrv3.sh`，尚待 VM 验收。下载同一个已验收 Release 的全部资产，在该目录执行（需要 python3、mokutil、systemd 和 GRUB）：
+
+```bash
+sudo bash ./install-bbrv3.sh install
+# 确认 GRUB 启动目标及控制台/回退路径后，可改用下面命令安装并立即重启：
+# sudo bash ./install-bbrv3.sh install --reboot
+```
+
+脚本不更改 GRUB 默认项，请确保启动目标自定义内核。重启后自动验证，查看 `journalctl -u bbrv3-verify -b --no-pager`；也可 `sudo /var/lib/bbrv3-installer/install-bbrv3.sh test` 重测。包括运行内核、已加载 BBR 模块版本、sysctl 和本机 TCP 冒烟测试，不代表公网性能测试通过。拒绝正在运行的同 release 原地安装。最早的旧构建不含新脚本，可从仓库同时获取新版 install/enable 脚本；不得把编译成功当成已完成安装验收。
+
+后续具体工作见 [GPT-5.6 操作单](NEXT-STEPS-5.6.md)，尤其先确认 ZFS 拆分包依赖与 VM 启动。
+
 从同一个成功 Release 下载全部 `.deb`、`SHA256SUMS`、`bbrv3.sysctl.conf` 和 `enable-bbrv3.sh` 到一个空目录。以下操作应在 Ubuntu 26.04 amd64 服务器执行，并保留 Canonical 内核作为 GRUB 回退项：
 
 ```bash
