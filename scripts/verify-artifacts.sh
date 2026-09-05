@@ -147,15 +147,15 @@ mv "$manifest_tmp" "$release_dir/PACKAGE-MANIFEST.tsv"
 )
 
 {
-  printf '%s\n\n' '# Ubuntu 26.04 BBRv3 kernel'
-  printf '%s\n' "- Ubuntu source package: linux $source_version"
-  printf '%s\n' "- Custom kernel release: $kernel_release"
-  printf '%s\n' "- Package version: $package_version"
-  printf '%s\n' '- Congestion-control selector after boot: bbr (not bbr3)'
-  printf '%s\n\n' '- BBR module version verified from the package: 3'
-  printf '%s\n' 'The custom kernel coexists with Canonical kernel packages; keep a Canonical fallback installed.'
-  printf '%s\n' "A matching $required_zfs package is included and its locally signed spl/zfs module vermagic was verified."
-  printf '%s\n' 'The kernel image is not Canonical-signed. Secure Boot requires image signing and trust enrollment, or it must be disabled.'
+  printf '%s\n\n' '# Ubuntu 26.04 BBRv3 内核'
+  printf '%s\n' "- Ubuntu 源码包：linux $source_version"
+  printf '%s\n' "- 自定义内核版本：$kernel_release"
+  printf '%s\n' "- 包版本：$package_version"
+  printf '%s\n' '- 启动后的拥塞控制选择器：bbr（不是 bbr3）'
+  printf '%s\n\n' '- BBR 模块版本已从包内验证：3'
+  printf '%s\n' '本内核与 Canonical 官方内核包并存，建议保留一个官方内核作为回退；确认风险后可在安装时使用 --allow-no-fallback 跳过该要求。'
+  printf '%s\n' "包含匹配的 $required_zfs 包，其本地签名的 spl/zfs 模块 vermagic 已验证。"
+  printf '%s\n' '内核镜像未经 Canonical 签名。启用 Secure Boot 的机器需完成镜像签名与信任注册，否则需关闭 Secure Boot。'
 } > "$release_dir/RELEASE-NOTES.md"
 
 printf 'Verified %d Debian packages for %s.\n' "${#packages[@]}" "$kernel_release"
