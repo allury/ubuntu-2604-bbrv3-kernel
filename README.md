@@ -10,10 +10,18 @@
 
 适用于 Ubuntu 26.04 amd64 环境（物理机或全虚拟化 VPS，systemd 与 GRUB）。
 
+标准安装（要求系统中保留 Canonical 原装内核作为回退）：
+
 ```bash
 curl -fsSLO https://github.com/allury/ubuntu-2604-bbrv3-kernel/raw/main/scripts/download-and-install.sh
 less download-and-install.sh
 sudo bash download-and-install.sh --reboot
+```
+
+确认风险后跳过回退内核检查（系统将无回退内核，启动失败需依赖服务商救援控制台恢复）：
+
+```bash
+sudo bash download-and-install.sh --allow-no-fallback --reboot
 ```
 
 安装脚本仅接受稳定 Release（拒绝 draft 与 prerelease），下载该 Release 的 `.deb` 包并逐包校验 `SHA256SUMS`，检查包白名单与依赖闭包后执行安装；保留原装内核并更新 GRUB，`--reboot` 参数控制是否自动重启。脚本不使用 `--force-depends`，任一步骤失败即终止。
@@ -22,7 +30,7 @@ sudo bash download-and-install.sh --reboot
 
 安装前置条件（脚本自检，不满足将拒绝执行）：
 
-- 系统中至少保留一个可启动的 Canonical 原装 generic 内核作为回退，缺失时可通过 `sudo apt-get install linux-image-generic` 补装；确认风险后可向安装器传入 `--allow-no-fallback` 跳过此检查（`download-and-install.sh` 支持同名参数透传），此时系统无回退内核，启动失败需依赖服务商救援控制台恢复；
+- 系统中至少保留一个可启动的 Canonical 原装 generic 内核作为回退，缺失时可通过 `sudo apt-get install linux-image-generic` 补装，或使用上方第二条命令跳过此检查；
 - dpkg 状态健康，`sudo dpkg --audit` 输出为空（此项不提供跳过途径）。
 
 重启完成后，首次登录时自动显示一行验收结论（内核版本、tcp_bbr 模块版本、开机自检 PASS/FAILED），无需手动执行任何命令。如需查看完整自检日志或手动复核：
