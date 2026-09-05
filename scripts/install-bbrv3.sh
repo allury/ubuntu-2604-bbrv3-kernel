@@ -52,8 +52,18 @@ PY
   printf 'PASS: booted %s and loaded BBRv3 plus matching OpenZFS modules; review journalctl -k -b for kernel warnings.\n' "$expected"
   exit 0
 fi
-[[ "$mode" == install ]] || die 'Usage: install-bbrv3.sh install [--reboot] | test'
-[[ $# -le 2 && ( -z "${2:-}" || "${2:-}" == --reboot ) ]] || die 'Unknown option.'
+[[ "$mode" == install ]] || die 'Usage: install-bbrv3.sh install [--reboot] [--allow-no-fallback] | test'
+shift || true
+reboot_option=''
+allow_no_fallback=''
+while (( $# > 0 )); do
+  case "$1" in
+    --reboot) reboot_option='--reboot' ;;
+    --allow-no-fallback) allow_no_fallback='1' ;;
+    *) die "Unknown option: $1" ;;
+  esac
+  shift
+done
 # shellcheck source=/dev/null
 source /etc/os-release
 [[ "$ID" == ubuntu && "$VERSION_ID" == 26.04 ]] || die 'Requires Ubuntu 26.04.'
@@ -153,9 +163,14 @@ for image_record in "${installed_images[@]}"; do
   fallback_release="$candidate_release"
   break
 done
-[[ -n "$fallback_release" ]] ||
-  die 'No fully installed Canonical fallback kernel was found. First run: apt-get update && apt-get install linux-image-generic'
-printf 'Canonical fallback kernel: %s\n' "$fallback_release"
+if [[ -n "$fallback_release" ]]; then
+  printf 'Canonical fallback kernel: %s\n' "$fallback_release"
+elif [[ -n "$allow_no_fallback" ]]; then
+  printf 'WARNING: no Canonical fallback kernel is installed; continuing because --allow-no-fallback was given.\n' >&2
+  printf 'WARNING: if this kernel fails to boot, recovery requires the provider rescue console.\n' >&2
+else
+  die 'No fully installed Canonical fallback kernel was found. Install one with: apt-get update && apt-get install linux-image-generic (or pass --allow-no-fallback to accept the risk)'
+fi
 
 mounted_zfs="$(findmnt --raw --noheadings --types zfs --output TARGET 2>/dev/null || true)"
 imported_zpools=''
@@ -212,4 +227,4 @@ systemctl daemon-reload
 systemctl enable bbrv3-verify.service
 printf 'Installed %s. Select this kernel in GRUB. After boot: journalctl -u bbrv3-verify -b --no-pager\n' "$expected"
 printf 'Original kernels are retained. This script does not change your GRUB default.\n'
-if [[ "${2:-}" == --reboot ]]; then systemctl reboot; fi
+if [[ -n "$reboot_option" ]]; then systemctl reboot; fi
