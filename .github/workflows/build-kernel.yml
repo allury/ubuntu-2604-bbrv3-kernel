@@ -4,15 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       source_version:
-        description: 'Ubuntu linux source version, e.g. 7.0.0-30.30; use auto for the newest 7.0.0 ABI'
+        description: 'Ubuntu linux source version, or auto for the released linux-image-generic candidate'
         required: true
         default: '7.0.0-30.30'
         type: string
-      force:
-        description: 'Rebuild even if a release with this tag already exists'
-        required: false
-        default: false
-        type: boolean
   schedule:
     - cron: '23 2 * * *'
 
@@ -29,49 +24,63 @@ env:
 
 jobs:
   plan:
-    name: Resolve Ubuntu kernel source
+    name: Resolve released Ubuntu kernel source
     runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:26.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
     outputs:
       source_version: ${{ steps.resolve.outputs.source_version }}
       source_tag: ${{ steps.resolve.outputs.source_tag }}
       custom_abi: ${{ steps.resolve.outputs.custom_abi }}
       kernel_release: ${{ steps.resolve.outputs.kernel_release }}
       package_version: ${{ steps.resolve.outputs.package_version }}
+      patch_revision: ${{ steps.resolve.outputs.patch_revision }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       build_needed: ${{ steps.release.outputs.build_needed }}
     steps:
+      - name: Bootstrap the Ubuntu 26.04 resolver container
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git jq
+
       - uses: actions/checkout@v4
 
       - id: resolve
         name: Resolve source version
+        env:
+          REQUESTED_VERSION: ${{ inputs.source_version }}
         shell: bash
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            requested_version="${{ inputs.source_version }}"
-          else
-            requested_version="auto"
-          fi
-          ./scripts/resolve-source.sh "$requested_version"
+        run: ./scripts/resolve-source.sh "${REQUESTED_VERSION:-auto}"
 
       - id: release
-        name: Skip an already-published source ABI
+        name: Skip an already-published release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          force_build="false"
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            force_build="${{ inputs.force }}"
-          fi
-
-          if [[ "$force_build" != "true" ]] && \
-             gh release view "${{ steps.resolve.outputs.release_tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "build_needed=false" >> "$GITHUB_OUTPUT"
-            echo "Release already exists; no rebuild is needed."
-          else
-            echo "build_needed=true" >> "$GITHUB_OUTPUT"
-          fi
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/${{ steps.resolve.outputs.release_tag }}"
+          http_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api")"
+          case "$http_status" in
+            200)
+              echo 'build_needed=false' >> "$GITHUB_OUTPUT"
+              echo 'An immutable release for this source and patch revision already exists.'
+              ;;
+            404)
+              echo 'build_needed=true' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              printf 'ERROR: GitHub release lookup returned HTTP %s.\n' "$http_status" >&2
+              exit 1
+              ;;
+          esac
 
   build:
     name: Build ${{ needs.plan.outputs.source_version }} (amd64)
@@ -89,6 +98,7 @@ jobs:
       CUSTOM_ABI: ${{ needs.plan.outputs.custom_abi }}
       KERNEL_RELEASE: ${{ needs.plan.outputs.kernel_release }}
       PACKAGE_VERSION: ${{ needs.plan.outputs.package_version }}
+      PATCH_REVISION: ${{ needs.plan.outputs.patch_revision }}
       RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -97,7 +107,8 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git curl jq
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl dpkg-dev fakeroot git jq kmod xz-utils zstd
           if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
             sed -i -E 's/^Types:[[:space:]]*deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
           else
@@ -119,9 +130,8 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth=1 --branch "$SOURCE_TAG" "$UBUNTU_KERNEL_REPOSITORY" kernel
-          cd kernel
-          test "$(dpkg-parsechangelog -l debian.master/changelog -S Version)" = "$SOURCE_VERSION"
-          git describe --exact-match --tags HEAD | grep -Fx "$SOURCE_TAG"
+          test "$(dpkg-parsechangelog -l kernel/debian.master/changelog -S Version)" = "$SOURCE_VERSION"
+          git -C kernel describe --exact-match --tags HEAD | grep -Fx "$SOURCE_TAG"
 
       - name: Apply and validate full BBRv3 TCP-stack patch
         shell: bash
@@ -146,12 +156,12 @@ jobs:
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "$api?state=open&per_page=100" |
             jq -r --arg title "$title" '.[] | select(.title == $title) | .number' |
-            head -n 1)"
+            sed -n '1p')"
           if [[ -n "$existing" ]]; then
             echo "Porting issue #$existing is already open."
             exit 0
           fi
-          body="The BBRv3 patch did not pass exact git apply validation for Ubuntu source $SOURCE_VERSION. No kernel artifact was published. Rebase and validate a new patches/bbrv3-ubuntu-$SOURCE_VERSION.patch, then re-run the workflow."
+          body="The BBRv3 patch did not pass exact apply validation for Ubuntu source $SOURCE_VERSION. No kernel artifact was published. Rebase and validate a new versioned patch, then re-run the workflow."
           payload="$(jq -n --arg title "$title" --arg body "$body" '{title: $title, body: $body}')"
           curl --fail-with-body --request POST \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -163,7 +173,11 @@ jobs:
       - name: Give the package a non-conflicting custom ABI
         shell: bash
         working-directory: kernel
-        run: "$GITHUB_WORKSPACE/scripts/customize-ubuntu-package.sh" "$SOURCE_VERSION" "$CUSTOM_ABI"
+        run: |
+          set -euo pipefail
+          "$GITHUB_WORKSPACE/scripts/customize-ubuntu-package.sh" \
+            "$SOURCE_VERSION" "$CUSTOM_ABI" "$PATCH_REVISION"
+          fakeroot debian/rules clean
 
       - name: Build Ubuntu generic kernel Debian packages
         shell: bash
@@ -171,7 +185,7 @@ jobs:
         run: |
           set -euo pipefail
           export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
-          fakeroot debian/rules binary-generic \
+          fakeroot debian/rules binary-generic binary-headers \
             do_mainline_build=true \
             do_dbgsym_package=false \
             do_tools=false \
@@ -184,13 +198,24 @@ jobs:
           grep -Eq '^CONFIG_TCP_CONG_BBR=(m|y)$' kernel/debian/build/build-generic/.config
           grep -Eq '^CONFIG_NET_SCH_FQ=(m|y)$' kernel/debian/build/build-generic/.config
           mkdir -p release
-          find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.deb' -exec cp -t release {} +
+          mapfile -t generated_packages < <(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.deb' -printf '%p\n' | sort)
+          (( ${#generated_packages[@]} > 0 )) || { echo 'ERROR: The Ubuntu package build produced no .deb files.' >&2; exit 1; }
+          cp -- "${generated_packages[@]}" release/
+          install -m 0644 config/bbrv3.sysctl.conf release/bbrv3.sysctl.conf
+          install -m 0755 scripts/enable-bbrv3.sh release/enable-bbrv3.sh
+          install -m 0644 "patches/$BBRV3_PATCH_FILE" "release/$BBRV3_PATCH_FILE"
           "$GITHUB_WORKSPACE/scripts/verify-artifacts.sh" \
             "$GITHUB_WORKSPACE/release" \
             "$KERNEL_RELEASE" \
             "$PACKAGE_VERSION" \
             "$SOURCE_VERSION"
-          printf '%s\n' "Ubuntu source tag: $SOURCE_TAG" "Source commit: $(git -C kernel rev-parse HEAD)" > release/BUILD-METADATA.txt
+          {
+            printf '%s\n' "Ubuntu source tag: $SOURCE_TAG"
+            printf '%s\n' "Source commit: $(git -C kernel rev-parse HEAD)"
+            printf '%s\n' "BBRv3 patch: $BBRV3_PATCH_FILE"
+            printf '%s\n' "BBRv3 patch SHA256: $BBRV3_PATCH_SHA256"
+            printf '%s\n' "Ubuntu source repository: $UBUNTU_KERNEL_REPOSITORY"
+          } > release/BUILD-METADATA.txt
           ls -lh release
 
       - name: Upload packages as a workflow artifact
@@ -201,14 +226,37 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+  publish:
+    name: Publish immutable GitHub Release
+    needs: [plan, build]
+    if: needs.plan.outputs.build_needed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_VERSION: ${{ needs.plan.outputs.source_version }}
+      RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+    steps:
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@v4
         with:
-          tag_name: ${{ needs.plan.outputs.release_tag }}
-          name: Ubuntu 26.04 BBRv3 — ${{ needs.plan.outputs.source_version }}
-          body_path: release/RELEASE-NOTES.md
-          files: |
+          name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
+          path: release
+
+      - name: Create the immutable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
             release/*.deb
             release/SHA256SUMS
+            release/PACKAGE-MANIFEST.tsv
             release/BUILD-METADATA.txt
-          overwrite_files: true
+            release/bbrv3.sysctl.conf
+            release/enable-bbrv3.sh
+            release/*.patch
+          )
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Ubuntu 26.04 BBRv3 - $SOURCE_VERSION" \
+            --notes-file release/RELEASE-NOTES.md \
+            --prerelease

@@ -32,4 +32,11 @@ git apply --whitespace=error "$patch_file"
 grep -Eq '^#define BBR_VERSION[[:space:]]+3$' net/ipv4/tcp_bbr.c ||
   { printf 'ERROR: BBRv3 marker was not found after patching.\n' >&2; exit 1; }
 
-printf 'Applied BBRv3 patch successfully.\n'
+patch_basename="$(basename "$patch_file")"
+patch_sha256="$(sha256sum "$patch_file" | awk '{print $1}')"
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  printf 'BBRV3_PATCH_FILE=%s\n' "$patch_basename" >> "$GITHUB_ENV"
+  printf 'BBRV3_PATCH_SHA256=%s\n' "$patch_sha256" >> "$GITHUB_ENV"
+fi
+
+printf 'Applied BBRv3 patch successfully: %s (%s)\n' "$patch_basename" "$patch_sha256"
