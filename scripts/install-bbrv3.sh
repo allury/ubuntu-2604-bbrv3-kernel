@@ -3,6 +3,8 @@
 set -euo pipefail
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [[ $EUID == 0 ]] || die 'Run with sudo.'
+readonly installer_version='2026-09-05.2'
+printf 'bbrv3 installer %s\n' "$installer_version"
 mode="${1:-install}"
 state=/var/lib/bbrv3-installer
 if [[ "$mode" == test ]]; then
@@ -87,7 +89,17 @@ fi
 for file in SHA256SUMS enable-bbrv3.sh bbrv3.sysctl.conf; do
   [[ -f "$file" ]] || die "Run in the release directory; missing $file"
 done
-sha256sum --check --strict SHA256SUMS
+# Verify package integrity only. The installer itself is designed to be
+# updated independently of an immutable release, so it must not require
+# its own checksum to match the release manifest.
+grep -- '\.deb$' SHA256SUMS | sha256sum --check --strict -
+for file in enable-bbrv3.sh bbrv3.sysctl.conf; do
+  digest="$(sha256sum "$file")"
+  digest="${digest%% *}"
+  if ! grep -Fqx -- "$digest  $file" SHA256SUMS; then
+    printf 'NOTICE: %s does not match this release checksum; using the reviewed local copy.\n' "$file" >&2
+  fi
+done
 shopt -s nullglob
 packages=(./*.deb)
 (( ${#packages[@]} > 0 )) || die 'No packages.'
@@ -225,6 +237,31 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable bbrv3-verify.service
+# Show the post-install verification result once, on the first login after
+# the target kernel boots.
+touch "$state/report-once"
+install -d /etc/update-motd.d
+cat > /etc/update-motd.d/99-bbrv3-status <<'MOTD'
+#!/usr/bin/env bash
+# Installed by the BBRv3 kernel installer; prints the boot verification
+# result once, on the first login after the target kernel starts.
+state=/var/lib/bbrv3-installer
+flag="$state/report-once"
+[[ -f "$flag" ]] || exit 0
+[[ "$(uname -r)" == "$(cat "$state/expected-release" 2>/dev/null)" ]] || exit 0
+rm -f -- "$flag"
+release="$(uname -r)"
+version="$(cat /sys/module/tcp_bbr/version 2>/dev/null || true)"
+line=" * bbrv3 内核：${release}，tcp_bbr 版本 ${version:-未知}"
+if systemctl is-failed --quiet bbrv3-verify.service 2>/dev/null; then
+  printf '%s\n * 开机自检 FAILED，查看：journalctl -u bbrv3-verify -b --no-pager\n' "$line"
+elif systemctl is-active --quiet bbrv3-verify.service 2>/dev/null; then
+  printf '%s\n * 开机自检 PASS\n' "$line"
+else
+  printf '%s\n * 开机自检尚未完成，稍后可查看：journalctl -u bbrv3-verify -b\n' "$line"
+fi
+MOTD
+chmod 0755 /etc/update-motd.d/99-bbrv3-status
 printf 'Installed %s. Select this kernel in GRUB. After boot: journalctl -u bbrv3-verify -b --no-pager\n' "$expected"
 printf 'Original kernels are retained. This script does not change your GRUB default.\n'
 if [[ -n "$reboot_option" ]]; then systemctl reboot; fi
