@@ -15,10 +15,11 @@ emit() {
   local key="$1"
   local value="$2"
 
+  # Keep the resolver usable from command substitution and its behavior tests,
+  # even though GitHub exposes GITHUB_OUTPUT to every workflow step.
+  printf '%s=%s\n' "$key" "$value"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
-  else
-    printf '%s=%s\n' "$key" "$value"
   fi
 }
 
