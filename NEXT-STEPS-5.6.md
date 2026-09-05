@@ -1,40 +1,67 @@
-# GPT-5.6 接手操作单（2026-09-05 更新）
+# GPT-5.6 接手操作单（2026-09-05）
 
-本文更新旧 HANDOFF-ZH.md 的状态；旧文保留作历史审查，不应重新修复已经解决的问题。
+## 用户已经完成的真实验收
 
-## 实际状态
+历史构建：https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/33938396949
 
-首次构建：https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/33938396949
+历史 Release：https://github.com/allury/ubuntu-2604-bbrv3-kernel/releases/tag/ubuntu-26.04-bbrv3-7.0.0-30.30-p1
 
-构建提交 0e1fb419357a7e4e950c19db30ff8f6b1ab2b2bb；本次检查 build job 101231687193 仍在编译。尚无成功安装、启动或网络测试证据。当前新增的安装脚本不会自动进入这次旧提交的产物。
+用户在 Ubuntu 26.04.1 amd64 VPS 上安装并启动了 `7.0.0-10030-generic`。已给出的证据包括：
 
-已修复：YAML、多参数调用、heredoc、公共 headers 目标及 all 架构、管道 SIGPIPE、上传版本号、dispatch 输入、Release 查询错误处理。已采用完整 Ubuntu 内核编译与 prerelease。不要回到独立模块方案。
+- `uname -r`：`7.0.0-10030-generic`；
+- `cat /sys/module/tcp_bbr/version`：`3`；
+- 真实 HTTPS 连接的 `ss -ti`：显示 `bbr` 以及 `bbr:(bw, mrtt, pacing_gain, cwnd_gain)` 数据。
 
-本次新增 scripts/install-bbrv3.sh：从已下载的同一个 Release 目录安装，校验哈希/包版本、模拟 APT 依赖安装、保留原内核；可显式 --reboot；systemd 在启动后校验预期 uname、加载模块版本 3、bbr/fq 和本机 TCP 传输。不会修改 GRUB 默认项；用户需确认目标项或通过控制台选择。不是无需控制台的通用无人值守部署器。
+因此 BBRv3 的启动与真实 TCP 冒烟测试已成功，不要再次质疑它是否仍是 BBRv1。
 
-## 接手后按顺序操作
+## p1 的已确认缺陷
 
-1. 读取当前 run 结果及完整日志。不要取消仍在正常编译的 run，也不要为加入脚本重复编译整个内核。失败先定位首个真实错误。
-2. 最高优先级核查包依赖闭包。精确源码 debian.master/control.d/vars.generic 包含 linux-main-modules-zfs-PKGVER-ABINUM-generic 依赖；do_mainline_build=true 关闭 DKMS，可能产出无法安装的 custom ABI 依赖。检查最终 dpkg-deb -f 的 Depends，不能只靠源码推断必然失败。当前 verify-artifacts.sh 未覆盖这项。若确实缺包，正确构建对应组件或明确排除 ZFS 并修正依赖/文档；不允许 apt --force-depends。使用 ZFS 根文件系统的机器不能安装缺 ZFS 的内核。
-3. 在干净 Ubuntu 26.04 amd64 容器做 apt-get update 与 apt-get --simulate --no-remove install ./*.deb；再在隔离 VM 实际安装和启动。补上 CI 安装依赖检查，失败不得发布。收紧产物包名白名单及 vermagic 首字段精确匹配。实测 headers 支持外部模块构建。
-4. 对新增安装脚本做 VM 验收：非 root、错误系统/架构、容器、Secure Boot、哈希错误、混合版本、缺依赖都应停止；成功安装后启动目标内核，检查 journalctl -u bbrv3-verify -b。错误内核应报错且不配置 bbr。另测 GRUB 默认配置/回退：本版不强设默认，需控制台选择；若实现 grub-reboot，须从真实 grub.cfg 获取目标 ID 并验证，不要硬编码菜单标题。保留原内核；自动回退仅凭 grub-reboot 不能保证。
-5. 安装脚本的 loopback TCP 是冒烟测试；补充 VM 对端持续 TCP 传输、丢包/重传、dmesg BUG/Oops/WARN 检查。检查网卡/存储驱动、initramfs、DKMS 和 ZFS。模块 version=3 不是算法移植正确性的证明，仍需审查第三方补丁与 Google BBRv3 差异。
-6. 旧 run 成功后先验收包。新增脚本可从当前仓库获取配合同一个 Release 的 deb 使用；旧 Release 的 enable 脚本应换成本次有 sysfs 校验的版本。不要覆盖已发布资产；若需包含新脚本的发行包，发布明确的新修订并记录原二进制哈希/来源，或在下次完整构建使用新的打包工作流。未经过 VM 测试前保留 prerelease。
+`linux-modules-7.0.0-10030-generic` 硬依赖 `linux-main-modules-zfs-7.0.0-10030-generic`，但 p1 Release 未提供该包。VPS 的首次 `dpkg -i` 留下未配置包，`apt-get install -f` 随后删除了自定义 image/modules。用户最后用临时占位包完成启动。
 
-## 自动更新审查结论
+占位包只证明 BBRv3 路径可运行，不是可发布的依赖解决方案。不要删除 Ubuntu 的 ZFS 依赖，不要继续占位包，不要使用 `--force-depends`。
 
-方向正确但不能宣称已经完整验收：schedule 每天 02:23 UTC（北京时间 10:23，触发可能延迟），无 push 触发。定时传 auto；手动默认仍是 7.0.0-30.30。从 ubuntu:26.04 APT 的 linux-image-generic 候选依赖映射精确 tag，严格应用补丁、构建、验证，再按 source+patch_revision 标签跳过已有 Release。
+## 用户确定的 p2 技术路线
 
-需要补齐：
+最终措辞是“内核对齐 Ubuntu 26.04，来源保持安全性”：
 
-- 在真实 Ubuntu 容器运行 auto，保存 apt-cache policy/show 输出与源配置。显式限定 resolute、resolute-updates、resolute-security，拒绝 proposed/其他发行版。确认签名 image 的 Source 可能是 linux-signed，不能未经核实用二进制版本当 linux 源码版本；从对应 unsigned image 或源包元数据交叉核对。
-- 当前正则只接受 7.0.0-ABI.upload；内核系列/源码包/修订格式变化会失败，不能自动适配。增加清楚的失败报告；遇到新系列要人工移植，不能仅放宽正则。
-- 为 auto/no-update/new-upload/跨系列/404/403/补丁冲突添加小型可重复行为测试。补丁冲突已有 issue，解析失败及构建失败还没有统一通知逻辑。
-- 同 ABI 新上传包版本可递增，但 uname 相同，安装会替换旧自定义模块；本次安装器拒绝正在运行的同 release 原地安装。应定义构建修订与可回退的 release/ABI 方案，不能只提高 patch_revision 就宣称两版并存。
-- do_mainline_build=true 也关闭 Ubuntu 部分检查（do_skip_checks），不仅是省略工具。明确配置差异，保存 .config、精确源码/补丁/构建脚本与许可证信息，补 VM 启动门禁。
-- 每个 job 最小权限、Actions 固定 commit SHA、失败日志/磁盘指标归档。不要改变正在运行的 job；后续提交不影响旧 run。
-- GitHub 自动构建不等于服务器自动升级；不添加服务器定时安装/重启任务。
+- 只接受 `resolute`、`resolute-updates`、`resolute-security`；拒绝 proposed/backports/PPA；
+- 精确解析已发布 `linux` 源版本和 Launchpad tag；
+- 完整合入 BBRv3 TCP 栈补丁并重编完整 generic 内核；
+- 保留 Ubuntu 的 `linux-main-modules-zfs-$release` 依赖；
+- 从 Ubuntu 26.04 的 `zfs-dkms` 构建真实 `spl.ko`/`zfs.ko`，针对自定义 ABI 本地签名并打包；
+- p2 新 ABI 与 p1 并存；
+- 干净系统安装、headers 外部模块编译、QEMU BBRv3/ZFS 加载均为每个正式版的自动门禁；
+- 下一版通过全部门禁后发布稳定 Release，不再加 `--prerelease`。
 
-## 用户授权
+对齐不表示 Canonical 官方或 Canonical 签名。内核镜像仍是 `linux-image-unsigned-*`。
 
-已授权仓库修复、推送、Actions 构建与安装脚本开发。未提供服务器访问，也未授权实际服务器安装或重启。用户准备交给 GPT-5.6 后续实操；按上述顺序完成验证，报告实际结果，不要把静态检查当成已成功启用 BBRv3。
+## 接手后的顺序
+
+1. 先读取当前分支、最新提交、Actions run 和完整失败日志。不要凭推测修改。
+2. 确认 `scripts/resolve-source.sh` 的行为测试通过；手动版本和 auto 都必须来自允许的 Ubuntu APT 源。
+3. 若 ZFS 构建失败，定位 `debian/scripts/dkms-build` 或 OpenZFS `make.log` 的第一个真实错误。保持 Ubuntu `zfs-dkms` 来源，不要换不明第三方仓库。
+4. 检查发布目录必须包含：image、modules、两类 headers、buildinfo、可选 rust，以及精确匹配的 `linux-main-modules-zfs-$release`。
+5. `install-check` 必须真实安装全部 `.deb`；不能只做 `dpkg-deb -I`。确认 `apt-get --simulate --no-remove`、真实 install、`apt-get check`、`dpkg --audit`、ZFS signer/vermagic、外部 headers 编译均成功。
+6. `boot-smoke` 必须从 Release artifact 解包精确 vmlinuz 和模块，在 QEMU 内加载 `tcp_bbr`、`spl`、`zfs`，检查 BBRv3 `version=3` 并完成 TCP 传输。
+7. 只有 build、install-check、boot-smoke 全绿才允许 publish 稳定 Release。失败不得手工上传未经同等验证的 `.deb`。
+8. 成功后把 run、commit、Release、内核 release、包版本、ZFS 源版本和 SHA-256 回填本文件及 README；把 p1 Release 明确标成历史缺陷 prerelease。
+
+## VPS 安装注意事项
+
+用户的 `/boot` 当前只看到 `7.0.0-10030-generic`，`vmlinuz.old` 和 `initrd.img.old` 也指向同一版本；这不是多份内核，而是缺少真正回退内核的迹象。安装 p2 前要求：
+
+```bash
+sudo apt-get update
+sudo apt-get install linux-image-generic
+sudo dpkg --audit
+```
+
+新 `download-and-install.sh` 只选择稳定 Release，下载全部资产并验 SHA-256。`install-bbrv3.sh` 会拒绝损坏的 dpkg 状态、缺少真实 ZFS 包、混合版本、意外包以及没有 Canonical 回退内核的机器。启动后 systemd 自动测试 BBRv3 和 ZFS。
+
+用户没有提供 VPS 访问凭据，也没有授权代理登录或重启；服务器安装、GRUB 选择和重启由用户执行。不要删除旧内核。
+
+## 自动更新边界
+
+每天 02:23 UTC 检查 Ubuntu 26.04 已发布的 `linux-image-generic` 候选。新 ABI 必须重复所有门禁；ZFS 默认包含不等于可以省略重新编译/加载测试。遇到新内核系列或 TCP 补丁冲突时创建移植 issue 并停止，不允许模糊 patch。
+
+GitHub 自动构建不等于 VPS 自动升级。除非用户以后单独授权服务器端自动安装和重启，否则只发布 Release，不进行无人值守生产升级。

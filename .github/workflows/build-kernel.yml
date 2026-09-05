@@ -6,14 +6,12 @@ on:
       source_version:
         description: 'Ubuntu linux source version, or auto for the released linux-image-generic candidate'
         required: true
-        default: '7.0.0-30.30'
+        default: 'auto'
         type: string
   schedule:
     - cron: '23 2 * * *'
 
-permissions:
-  contents: write
-  issues: write
+permissions: {}
 
 concurrency:
   group: ubuntu-2604-bbrv3-kernel
@@ -25,6 +23,8 @@ env:
 jobs:
   plan:
     name: Resolve released Ubuntu kernel source
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     container:
       image: ubuntu:26.04
@@ -47,7 +47,13 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git jq
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Test resolver behavior
+        shell: bash
+        run: ./tests/test-resolve-source.sh
 
       - id: resolve
         name: Resolve source version
@@ -86,6 +92,9 @@ jobs:
     name: Build ${{ needs.plan.outputs.source_version }} (amd64)
     needs: plan
     if: needs.plan.outputs.build_needed == 'true'
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     container:
@@ -100,7 +109,6 @@ jobs:
       PACKAGE_VERSION: ${{ needs.plan.outputs.package_version }}
       PATCH_REVISION: ${{ needs.plan.outputs.patch_revision }}
       RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Bootstrap Ubuntu 26.04 build container
         shell: bash
@@ -108,7 +116,8 @@ jobs:
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl dpkg-dev fakeroot git jq kmod xz-utils zstd
+            ca-certificates curl dkms dpkg-dev fakeroot file git jq kmod \
+            libc6-dev libpython3-stdlib lsb-release xz-utils zstd
           if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
             sed -i -E 's/^Types:[[:space:]]*deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
           else
@@ -119,7 +128,19 @@ jobs:
           apt-get build-dep -y --no-install-recommends linux
           apt-get clean
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Revalidate released source and custom version plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved="$(./scripts/resolve-source.sh "$SOURCE_VERSION")"
+          grep -Fxq "source_version=$SOURCE_VERSION" <<<"$resolved"
+          grep -Fxq "custom_abi=$CUSTOM_ABI" <<<"$resolved"
+          grep -Fxq "kernel_release=$KERNEL_RELEASE" <<<"$resolved"
+          grep -Fxq "package_version=$PACKAGE_VERSION" <<<"$resolved"
 
       - name: Show available disk space
         shell: bash
@@ -146,6 +167,8 @@ jobs:
 
       - name: Open a porting issue if the patch no longer applies
         if: failure() && env.PATCH_PORT_REQUIRED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -191,20 +214,32 @@ jobs:
             do_tools=false \
             do_source_package=false
 
+      - name: Build matching Ubuntu OpenZFS modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          ./scripts/build-zfs-package.sh \
+            "$GITHUB_WORKSPACE/kernel" \
+            "$GITHUB_WORKSPACE/release" \
+            "$KERNEL_RELEASE" \
+            "$PACKAGE_VERSION"
+
       - name: Collect and verify packages
         shell: bash
         run: |
           set -euo pipefail
           grep -Eq '^CONFIG_TCP_CONG_BBR=(m|y)$' kernel/debian/build/build-generic/.config
           grep -Eq '^CONFIG_NET_SCH_FQ=(m|y)$' kernel/debian/build/build-generic/.config
-          mkdir -p release
           mapfile -t generated_packages < <(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -name '*.deb' -printf '%p\n' | sort)
           (( ${#generated_packages[@]} > 0 )) || { echo 'ERROR: The Ubuntu package build produced no .deb files.' >&2; exit 1; }
           cp -- "${generated_packages[@]}" release/
           install -m 0644 config/bbrv3.sysctl.conf release/bbrv3.sysctl.conf
           install -m 0755 scripts/enable-bbrv3.sh release/enable-bbrv3.sh
           install -m 0755 scripts/install-bbrv3.sh release/install-bbrv3.sh
+          install -m 0755 scripts/download-and-install.sh release/download-and-install.sh
           install -m 0644 "patches/$BBRV3_PATCH_FILE" "release/$BBRV3_PATCH_FILE"
+          install -m 0644 kernel/debian/build/build-generic/.config "release/config-$KERNEL_RELEASE"
           "$GITHUB_WORKSPACE/scripts/verify-artifacts.sh" \
             "$GITHUB_WORKSPACE/release" \
             "$KERNEL_RELEASE" \
@@ -216,35 +251,227 @@ jobs:
             printf '%s\n' "BBRv3 patch: $BBRV3_PATCH_FILE"
             printf '%s\n' "BBRv3 patch SHA256: $BBRV3_PATCH_SHA256"
             printf '%s\n' "Ubuntu source repository: $UBUNTU_KERNEL_REPOSITORY"
+            printf '%s\n' "External ZFS modules: included as linux-main-modules-zfs-$KERNEL_RELEASE"
+            printf '%s\n' 'Ubuntu packaging mode: core kernel built with do_mainline_build=true; OpenZFS then built separately from the released Ubuntu zfs-dkms source'
+            cat release/ZFS-BUILD-METADATA.txt
           } > release/BUILD-METADATA.txt
-          (cd release && sha256sum -- *.deb *.sh *.conf *.patch BUILD-METADATA.txt PACKAGE-MANIFEST.tsv > SHA256SUMS)
+          (cd release && sha256sum -- *.deb *.sh *.conf *.patch config-* BUILD-METADATA.txt ZFS-BUILD-METADATA.txt PACKAGE-MANIFEST.tsv > SHA256SUMS)
           ls -lh release
 
       - name: Upload packages as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
           path: release/
           if-no-files-found: error
           compression-level: 0
 
-  publish:
-    name: Publish immutable GitHub Release
+  install-check:
+    name: Install packages in clean Ubuntu 26.04
     needs: [plan, build]
     if: needs.plan.outputs.build_needed == 'true' && needs.build.result == 'success'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ubuntu:26.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    env:
+      KERNEL_RELEASE: ${{ needs.plan.outputs.kernel_release }}
+      PACKAGE_VERSION: ${{ needs.plan.outputs.package_version }}
+    steps:
+      - name: Install test prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates initramfs-tools kmod
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download verified package artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
+          path: release
+
+      - name: Simulate and perform a clean package installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum --check --strict SHA256SUMS)
+          apt-get --simulate --no-remove install "$GITHUB_WORKSPACE"/release/*.deb
+          apt-get --yes --no-remove install "$GITHUB_WORKSPACE"/release/*.deb
+          apt-get check
+          audit_output="$(dpkg --audit 2>&1 || true)"
+          test -z "$audit_output" || { printf '%s\n' "$audit_output" >&2; exit 1; }
+          while IFS=$'\t' read -r _ package_name package_version _ _; do
+            test "$(dpkg-query -W -f='${db:Status-Abbrev}' "$package_name")" = 'ii '
+            test "$(dpkg-query -W -f='${Version}' "$package_name")" = "$package_version"
+          done < <(tail -n +2 release/PACKAGE-MANIFEST.tsv)
+          test -s "/boot/vmlinuz-$KERNEL_RELEASE"
+          test -s "/boot/initrd.img-$KERNEL_RELEASE"
+          test -L "/usr/lib/modules/$KERNEL_RELEASE/build"
+          test "$(dpkg-query -W -f='${Version}' "linux-image-unsigned-$KERNEL_RELEASE")" = "$PACKAGE_VERSION"
+          test "$(dpkg-query -W -f='${Version}' "linux-main-modules-zfs-$KERNEL_RELEASE")" = "$PACKAGE_VERSION"
+          zfs_module="$(find "/usr/lib/modules/$KERNEL_RELEASE" -type f -name 'zfs.ko*' -print -quit)"
+          test -n "$zfs_module"
+          test "$zfs_module" = "/usr/lib/modules/$KERNEL_RELEASE/ubuntu/dkms/zfs/zfs.ko.zst"
+          zfs_owner="$(dpkg-query -S "$zfs_module")"
+          zfs_owner="${zfs_owner%%: *}"
+          zfs_owner="${zfs_owner%%:*}"
+          test "$zfs_owner" = "linux-main-modules-zfs-$KERNEL_RELEASE"
+          test "$(modinfo -F vermagic "$zfs_module" | awk '{print $1}')" = "$KERNEL_RELEASE"
+          test -n "$(modinfo -F signer "$zfs_module")"
+
+      - name: Compile an external module against the released headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C "/usr/lib/modules/$KERNEL_RELEASE/build" \
+            M="$GITHUB_WORKSPACE/tests/external-module" modules
+          module="$GITHUB_WORKSPACE/tests/external-module/bbrv3_header_smoke.ko"
+          test -s "$module"
+          test "$(modinfo -F vermagic "$module" | awk '{print $1}')" = "$KERNEL_RELEASE"
+
+  boot-smoke:
+    name: Boot kernel and exercise BBRv3 in QEMU
+    needs: [plan, build]
+    if: needs.plan.outputs.build_needed == 'true' && needs.build.result == 'success'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      KERNEL_RELEASE: ${{ needs.plan.outputs.kernel_release }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download verified package artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
+          path: release
+
+      - name: Prepare QEMU and a minimal initramfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static cpio gcc kmod libc6-dev qemu-system-x86 zstd
+          mkdir -p qemu/image qemu/modules qemu/root/{bin,dev,proc,sys,modules}
+          dpkg-deb -x release/linux-image-unsigned-*.deb qemu/image
+          dpkg-deb -x release/linux-modules-*.deb qemu/modules
+          dpkg-deb -x release/linux-main-modules-zfs-*.deb qemu/modules
+          kernel_image="$(find qemu/image/boot -type f -name "vmlinuz-$KERNEL_RELEASE" -print -quit)"
+          test -s "$kernel_image"
+          printf '%s\n' "$kernel_image" > qemu/kernel-image-path
+
+          extract_module() {
+            local module_name="$1"
+            local module_path
+            local dependencies
+            module_path="$(find "qemu/modules/usr/lib/modules/$KERNEL_RELEASE" -type f -name "$module_name.ko*" -print -quit)"
+            test -n "$module_path"
+            dependencies="$(modinfo -F depends "$module_path")"
+            test -z "$dependencies"
+            case "$module_path" in
+              *.zst) zstd --quiet --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
+              *.xz) xz --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
+              *.ko) cp "$module_path" "qemu/root/modules/$module_name.ko" ;;
+              *) return 1 ;;
+            esac
+          }
+          extract_module sch_fq
+          extract_module tcp_bbr
+          for module_name in spl zfs; do
+            module_path="$(find "qemu/modules/usr/lib/modules/$KERNEL_RELEASE" -type f -name "$module_name.ko*" -print -quit)"
+            test -n "$module_path"
+            case "$module_path" in
+              *.zst) zstd --quiet --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
+              *.xz) xz --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
+              *.ko) cp "$module_path" "qemu/root/modules/$module_name.ko" ;;
+              *) exit 1 ;;
+            esac
+          done
+          test -z "$(modinfo -F depends qemu/root/modules/spl.ko)"
+          test "$(modinfo -F depends qemu/root/modules/zfs.ko)" = spl
+          modinfo -F version qemu/root/modules/zfs.ko > qemu/root/zfs-expected-version
+          test -s qemu/root/zfs-expected-version
+          install -m 0755 /bin/busybox qemu/root/bin/busybox
+          install -m 0755 tests/qemu-init.sh qemu/root/init
+          gcc -static -O2 -Wall -Wextra -Werror \
+            tests/qemu-bbr-smoke.c -o qemu/root/bbrv3-socket-smoke
+          sudo mknod qemu/root/dev/console c 5 1
+          sudo mknod qemu/root/dev/null c 1 3
+          (cd qemu/root && find . -print0 | cpio --null --create --format=newc 2>/dev/null | gzip -9 > ../initramfs.cpio.gz)
+
+      - name: Boot the exact kernel and test a BBR socket
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_image="$(cat qemu/kernel-image-path)"
+          set +e
+          timeout 180s qemu-system-x86_64 \
+            -machine q35,accel=tcg \
+            -cpu max \
+            -smp 2 \
+            -m 768M \
+            -display none \
+            -monitor none \
+            -serial stdio \
+            -no-reboot \
+            -kernel "$kernel_image" \
+            -initrd qemu/initramfs.cpio.gz \
+            -append 'rdinit=/init console=ttyS0,115200 panic=-1' \
+            2>&1 | tee qemu-console.log
+          qemu_status="${PIPESTATUS[0]}"
+          set -e
+          grep -F 'BBRV3_SOCKET_PASS' qemu-console.log
+          grep -F "BBRV3_QEMU_PASS: $KERNEL_RELEASE, module version 3" qemu-console.log
+          grep -F 'ZFS_QEMU_PASS: module version ' qemu-console.log
+          test "$qemu_status" -eq 0
+
+      - name: Preserve QEMU console log
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: qemu-console-${{ needs.plan.outputs.source_version }}
+          path: qemu-console.log
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish immutable GitHub Release
+    needs: [plan, build, install-check, boot-smoke]
+    if: >-
+      needs.plan.outputs.build_needed == 'true' &&
+      needs.build.result == 'success' &&
+      needs.install-check.result == 'success' &&
+      needs.boot-smoke.result == 'success'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     env:
-      GH_TOKEN: ${{ github.token }}
       SOURCE_VERSION: ${{ needs.plan.outputs.source_version }}
       RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
     steps:
       - name: Download verified build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
           path: release
 
       - name: Create the immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -254,12 +481,14 @@ jobs:
             release/PACKAGE-MANIFEST.tsv
             release/BUILD-METADATA.txt
             release/bbrv3.sysctl.conf
+            release/download-and-install.sh
             release/enable-bbrv3.sh
             release/install-bbrv3.sh
+            release/config-*
             release/*.patch
+            release/ZFS-BUILD-METADATA.txt
           )
           gh release create "$RELEASE_TAG" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Ubuntu 26.04 BBRv3 - $SOURCE_VERSION" \
-            --notes-file release/RELEASE-NOTES.md \
-            --prerelease
+            --notes-file release/RELEASE-NOTES.md

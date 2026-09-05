@@ -10,11 +10,11 @@ baseline_patch="$repo_root/patches/bbrv3-ubuntu-7.0.0-30.30.patch"
 if [[ -f "$exact_patch" ]]; then
   patch_file="$exact_patch"
   patch_kind="version-specific"
-elif [[ -f "$baseline_patch" ]]; then
+elif [[ "$source_version" == 7.0.0-* && -f "$baseline_patch" ]]; then
   patch_file="$baseline_patch"
   patch_kind="7.0 baseline"
 else
-  printf 'ERROR: No BBRv3 patch is available for Ubuntu source %s.\n' "$source_version" >&2
+  printf 'ERROR: No BBRv3 patch is available for Ubuntu source %s. Add a version-specific patch before building this kernel series.\n' "$source_version" >&2
   exit 1
 fi
 
