@@ -70,6 +70,8 @@ LINE_SUBSTITUTIONS = [
     # 7.0 bitfield layout for recvmsg_inq.
     ("u32\trecvmsg_inq : 1,/* Indicate # of bytes in queue upon recvmsg */",
      "\trecvmsg_inq : 1,/* Indicate # of bytes in queue upon recvmsg */"),
+    ("u8\trecvmsg_inq : 1,/* Indicate # of bytes in queue upon recvmsg */",
+     "\trecvmsg_inq : 1,/* Indicate # of bytes in queue upon recvmsg */"),
 ]
 
 # Google-added blocks that must NOT be carried into the Ubuntu port,
@@ -153,12 +155,38 @@ def parse_hunks(diff_lines):
     return hunks
 
 
+def substitute_line(line):
+    """Pure single-line application of the adaptation mapping (no notes)."""
+    for old, new in LINE_SUBSTITUTIONS:
+        if line.strip() == old.strip():
+            return new
+    return line
+
+
+def norm(line):
+    return " ".join(line.split())
+
+
+def block_matches(window, old):
+    """True when a base window corresponds to a 6.13-era hunk context,
+    accounting for the documented adaptations and whitespace drift."""
+    if window == old:
+        return True
+    sub_old = [substitute_line(l) for l in old]
+    if window == sub_old:
+        return True
+    if [norm(l) for l in window] == [norm(l) for l in sub_old]:
+        return True
+    if [norm(l) for l in window] == [norm(l) for l in old]:
+        return True
+    return False
+
+
 def apply_hunks(base_lines, hunks, path):
     """Place hunks by matching their context, in order, into base_lines."""
     result = list(base_lines)
     cursor = 0
     for ostart, old, new in hunks:
-        ctx = [l for l in old if l.strip()]
         adapted = substitute(new, path)
         if old == new:
             continue
@@ -171,19 +199,16 @@ def apply_hunks(base_lines, hunks, path):
                 note("auto", path, f"hunk at base line {i + 1} ({len(new)} added lines)")
                 break
         if not placed:
-            # Fallback: match on trimmed context of the change region.
-            core = [l for l in old if l.strip()][:3]
             for i in range(cursor, len(result) - len(old) + 1):
-                window = [l for l in result[i:i + len(old)] if l.strip()]
-                if window[:len(core)] == core:
-                    # Replace only the exact matched old block size.
+                if block_matches(result[i:i + len(old)], old):
                     result[i:i + len(old)] = adapted
                     cursor = i + len(adapted)
                     placed = True
-                    note("adapt", path, f"context-relaxed hunk at base line {i + 1}")
+                    note("adapt", path, f"adapted-context hunk at base line {i + 1}")
                     break
         if not placed:
-            raise SystemExit(f"UNRESOLVED hunk in {path}: old={old[:4]!r}...")
+            raise SystemExit(
+                f"UNRESOLVED hunk in {path}: old={old!r}")
     return result
 
 
