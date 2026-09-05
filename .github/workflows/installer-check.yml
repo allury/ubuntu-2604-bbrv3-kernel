@@ -1,0 +1,28 @@
+name: Independent installer checks
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - installer/**
+      - tests/test-independent-installer.py
+      - .github/workflows/installer-check.yml
+  pull_request:
+    paths:
+      - installer/**
+      - tests/test-independent-installer.py
+      - .github/workflows/installer-check.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: shellcheck installer/install.sh
+      - run: python3 tests/test-independent-installer.py
+      - run: |
+          bash tests/test-resolve-source.sh
+          bash tests/test-resolve-zfs-source.sh

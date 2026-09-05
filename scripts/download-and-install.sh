@@ -11,11 +11,8 @@ die() {
 }
 
 [[ $EUID == 0 ]] || die 'Run with sudo.'
-readonly installer_version='2026-09-05.2'
-printf 'bbrv3 installer %s\n' "$installer_version"
 requested_tag='latest'
 reboot_option=''
-fallback_option=''
 while (( $# > 0 )); do
   case "$1" in
     --tag)
@@ -27,12 +24,8 @@ while (( $# > 0 )); do
       reboot_option='--reboot'
       shift
       ;;
-    --allow-no-fallback)
-      fallback_option='--allow-no-fallback'
-      shift
-      ;;
     -h|--help)
-      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot] [--allow-no-fallback]\n' "$0"
+      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot]\n' "$0"
       exit 0
       ;;
     *) die "Unknown option: $1" ;;
@@ -151,36 +144,13 @@ print(f"Downloaded stable release {tag} ({total_size} bytes).")
 PY
 
 rm -f -- "$download_dir/release.json"
-# The installer scripts are maintained independently of kernel releases.
-# If this downloader itself differs from the release asset copy, it came
-# from the repository: prefer the matching current installer scripts and
-# fall back to the release copies when the repository is unreachable.
-self_digest="$(sha256sum -- "${BASH_SOURCE[0]}")"
-self_digest="${self_digest%% *}"
-release_digest="$(sha256sum -- "$download_dir/download-and-install.sh")"
-release_digest="${release_digest%% *}"
-if [[ "$self_digest" != "$release_digest" ]]; then
-  base_raw="https://raw.githubusercontent.com/$repository/main"
-  for pair in 'scripts/install-bbrv3.sh:install-bbrv3.sh' \
-              'scripts/enable-bbrv3.sh:enable-bbrv3.sh' \
-              'config/bbrv3.sysctl.conf:bbrv3.sysctl.conf'; do
-    src="${pair%%:*}"
-    dst="${pair##*:}"
-    if curl --fail --location --silent --show-error "$base_raw/$src" \
-        --output "$download_dir/$dst.new"; then
-      mv -- "$download_dir/$dst.new" "$download_dir/$dst"
-    else
-      rm -f -- "$download_dir/$dst.new"
-      printf 'NOTICE: using the release copy of %s (repository copy unavailable).\n' "$dst" >&2
-    fi
-  done
-fi
 (
   cd "$download_dir"
-  grep -- '\.deb$' SHA256SUMS | sha256sum --check --strict -
+  sha256sum --check --strict SHA256SUMS
   chmod 0755 download-and-install.sh enable-bbrv3.sh install-bbrv3.sh
-  installer_args=(install)
-  if [[ -n "$reboot_option" ]]; then installer_args+=("$reboot_option"); fi
-  if [[ -n "$fallback_option" ]]; then installer_args+=("$fallback_option"); fi
-  bash ./install-bbrv3.sh "${installer_args[@]}"
+  if [[ -n "$reboot_option" ]]; then
+    bash ./install-bbrv3.sh install "$reboot_option"
+  else
+    bash ./install-bbrv3.sh install
+  fi
 )
