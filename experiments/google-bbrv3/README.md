@@ -55,3 +55,11 @@ sudo python3 experiments/google-bbrv3/network_matrix.py --execute \
 输出包括环境信息、脚本哈希、ping、iperf3 JSON、tc 统计及前后内核日志。目前 CI 只验证语法、参数与结果解析；尚未在目标 VM 真实跑通，不能当作行为验收通过。IPv6、ECN、动态网络、多流竞争、内容哈希验证、实时 ss 采样和基线统计比较仍按 [验证清单](VALIDATION.md) 待补；工具不会自动宣告稳定。
 
 移植进展见 [移植记录](PORT-NOTES.md)。
+
+已实现的前置补丁按 `patches/series` 顺序维护。只验证临时索引、不修改工作区：
+
+```bash
+python3 experiments/google-bbrv3/verify_series.py --ubuntu /path/to/ubuntu-linux
+```
+
+当前仅含两项官方前置改动，尚非完整 BBRv3 移植，禁止用于生产构建。

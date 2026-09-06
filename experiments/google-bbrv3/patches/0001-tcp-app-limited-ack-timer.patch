@@ -1,0 +1,37 @@
+From: Neal Cardwell <ncardwell@google.com>
+Subject: [EXPERIMENT 1] tcp: detect app-limited gaps before ACK and timer handling
+
+Upstream-Repository: https://github.com/google/bbr.git
+Upstream-Commit: 137a508c950878712068b1d7a67ece75e4f2835c
+Ubuntu-Base: d974a4063f5c03c13b4f241a9ab511750e0b9f12
+
+Port the two upstream call sites to Ubuntu 7.0.0-30.30. The timer
+context no longer has an empty line before tcp_mstamp_refresh; use the
+actual Ubuntu context without changing call ordering. The ACK call
+remains immediately after the prior_in_flight snapshot.
+
+This is one prerequisite, not a complete BBRv3 port. Original authorship
+and the surrounding Linux source license are retained.
+
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -4311,6 +4311,7 @@
+ 
+ 	prior_fack = tcp_is_sack(tp) ? tcp_highest_sack_seq(tp) : tp->snd_una;
+ 	rs.prior_in_flight = tcp_packets_in_flight(tp);
++	tcp_rate_check_app_limited(sk);
+ 
+ 	/* ts_recent update must be made after we are sure that the packet
+ 	 * is in window.
+diff --git a/net/ipv4/tcp_timer.c b/net/ipv4/tcp_timer.c
+--- a/net/ipv4/tcp_timer.c
++++ b/net/ipv4/tcp_timer.c
+@@ -706,6 +706,7 @@
+ 			       tcp_timeout_expires(sk));
+ 		return;
+ 	}
++	tcp_rate_check_app_limited(sk);
+ 	tcp_mstamp_refresh(tcp_sk(sk));
+ 	event = icsk->icsk_pending;
+ 

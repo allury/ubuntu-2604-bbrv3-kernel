@@ -1,0 +1,64 @@
+From: Neal Cardwell <ncardwell@google.com>
+Subject: [EXPERIMENT 2] tcp: use 32-bit skb delivery timestamps
+
+Upstream-Repository: https://github.com/google/bbr.git
+Upstream-Commit: a627517bdfe01967c3f8b931cfce99abfa878ef5
+Ubuntu-Base: d974a4063f5c03c13b4f241a9ab511750e0b9f12
+
+Keep the upstream helper and skb field changes. Move the two rate
+sampling changes from the removed tcp_rate.c to tcp_input.c, where
+Ubuntu now defines tcp_rate_gen and tcp_rate_skb_delivered.
+Do not narrow the tcp_sock timestamp fields.
+Original authorship and the surrounding Linux source license are retained.
+
+diff --git a/include/net/tcp.h b/include/net/tcp.h
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -978,6 +978,11 @@
+ 	return max_t(s64, t1 - t0, 0);
+ }
+ 
++static inline u32 tcp_stamp32_us_delta(u32 t1, u32 t0)
++{
++	return max_t(s32, t1 - t0, 0);
++}
++
+ /* provide the departure time in us unit */
+ static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
+ {
+@@ -1091,9 +1096,9 @@
+ 			/* pkts S/ACKed so far upon tx of skb, incl retrans: */
+ 			__u32 delivered;
+ 			/* start of send pipeline phase */
+-			u64 first_tx_mstamp;
++			u32 first_tx_mstamp;
+ 			/* when we reached the "delivered" count */
+-			u64 delivered_mstamp;
++			u32 delivered_mstamp;
+ 		} tx;   /* only used for outgoing skbs */
+ 		union {
+ 			struct inet_skb_parm	h4;
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -1763,7 +1763,7 @@
+ 	 * longer phase.
+ 	 */
+ 	snd_us = rs->interval_us;				/* send phase */
+-	ack_us = tcp_stamp_us_delta(tp->tcp_mstamp,
++	ack_us = tcp_stamp32_us_delta(tp->tcp_mstamp,
+ 				    rs->prior_mstamp); /* ack phase */
+ 	rs->interval_us = max(snd_us, ack_us);
+ 
+@@ -1830,8 +1830,9 @@
+ 		/* Record send time of most recently ACKed packet: */
+ 		tp->first_tx_mstamp  = tx_tstamp;
+ 		/* Find the duration of the "send phase" of this window: */
+-		rs->interval_us = tcp_stamp_us_delta(tp->first_tx_mstamp,
+-						     scb->tx.first_tx_mstamp);
++		rs->interval_us      = tcp_stamp32_us_delta(
++						tp->first_tx_mstamp,
++						scb->tx.first_tx_mstamp);
+ 
+ 	}
+ 	/* Mark off the skb delivered once it's sacked to avoid being
