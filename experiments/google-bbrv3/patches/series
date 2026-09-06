@@ -1,2 +1,5 @@
 0001-tcp-app-limited-ack-timer.patch
 0002-tcp-rate-skb-timestamps.patch
+0003-tcp-inflight-snapshot.patch
+0004-tcp-loss-sampling.patch
+0005-tcp-ece-sampling.patch

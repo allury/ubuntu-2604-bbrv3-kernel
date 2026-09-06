@@ -1,0 +1,32 @@
+From: Neal Cardwell <ncardwell@google.com>
+Subject: [EXPERIMENT 5] tcp: expose ACK ECE flag to rate sample
+
+Upstream-Commit: 500bcfec22c478f4f1e07f66fd2a23ab2184b361
+Upstream-Repository: https://github.com/google/bbr.git
+
+Preserve Ubuntu's ecn_count handling. This only exposes FLAG_ECE;
+it does not implement or validate AccECN or the later BBR ECN policy.
+Original authorship and Linux source licensing are retained.
+
+diff --git a/include/net/tcp.h b/include/net/tcp.h
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -1283,6 +1283,7 @@
+ 	bool is_retrans;	/* is sample from retransmission? */
+ 	bool is_ack_delayed;	/* is this (likely) a delayed ACK? */
++	bool is_ece;		/* did this ACK have ECN marked? */
+ };
+ 
+ struct tcp_congestion_ops {
+ /* fast path fields are put first to fill one cache line */
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -4413,6 +4413,7 @@
+ 	lost = tp->lost - lost;			/* freshly marked lost */
+ 	rs.is_ack_delayed = !!(flag & FLAG_ACK_MAYBE_DELAYED);
++	rs.is_ece = !!(flag & FLAG_ECE);
+ 	tcp_rate_gen(sk, delivered, lost, is_sack_reneg, sack_state.rate);
+ 	tcp_cong_control(sk, ack, delivered, flag, sack_state.rate);
+ 	tcp_xmit_recovery(sk, rexmit);
+ 	return 1;

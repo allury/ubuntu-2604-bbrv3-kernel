@@ -1,0 +1,64 @@
+From: Neal Cardwell <ncardwell@google.com>
+Subject: [EXPERIMENT 4] tcp: record losses over delivery sampling interval
+
+Upstream-Commit: 3679f3b8da5a5b2528b6e14c5510617ed83db72b
+Upstream-Repository: https://github.com/google/bbr.git
+
+Relocate tcp_rate.c changes to Ubuntu send and ACK implementations.
+Keep existing per-ACK rs.losses distinct from new interval-wide rs.lost.
+Original authorship and Linux source licensing are retained.
+
+diff --git a/include/net/tcp.h b/include/net/tcp.h
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -1105,6 +1105,7 @@
+ 			u32 in_flight:20,   /* packets in flight at transmit */
+ 			    unused2:12;
++			u32 lost;	/* packets lost so far upon tx of skb */
+ 		} tx;   /* only used for outgoing skbs */
+ 		union {
+ 			struct inet_skb_parm	h4;
+ #if IS_ENABLED(CONFIG_IPV6)
+@@ -1264,9 +1265,11 @@
+ struct rate_sample {
+ 	u64  prior_mstamp; /* starting timestamp for interval */
++	u32  prior_lost;	/* tp->lost at "prior_mstamp" */
+ 	u32  prior_delivered;	/* tp->delivered at "prior_mstamp" */
+ 	u32  prior_delivered_ce;/* tp->delivered_ce at "prior_mstamp" */
+ 	u32 tx_in_flight;	/* packets in flight at starting timestamp */
++	s32  lost;		/* number of packets lost over interval */
+ 	s32  delivered;		/* number of packets delivered over interval */
+-	s32  delivered_ce;	/* number of packets delivered w/ CE marks*/
++	s32  delivered_ce;	/* packets delivered w/ CE mark over interval */
+ 	long interval_us;	/* time for tp->delivered to incr "delivered" */
+ 	u32 snd_interval_us;	/* snd interval for delivered packets */
+diff --git a/net/ipv4/tcp_output.c b/net/ipv4/tcp_output.c
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -1510,6 +1510,7 @@
+ 	TCP_SKB_CB(skb)->tx.delivered		= tp->delivered;
+ 	TCP_SKB_CB(skb)->tx.delivered_ce	= tp->delivered_ce;
++	TCP_SKB_CB(skb)->tx.lost		= tp->lost;
+ 	TCP_SKB_CB(skb)->tx.is_app_limited	= tp->app_limited ? 1 : 0;
+ 	tcp_set_tx_in_flight(sk, skb);
+ }
+ 
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -1753,6 +1753,7 @@
+ 	}
+ 	rs->delivered   = tp->delivered - rs->prior_delivered;
++	rs->lost        = tp->lost - rs->prior_lost;
+ 
+ 	rs->delivered_ce = tp->delivered_ce - rs->prior_delivered_ce;
+ 	/* delivered_ce occupies less than 32 bits in the skb control block */
+ 	rs->delivered_ce &= TCPCB_DELIVERED_CE_MASK;
+@@ -1820,6 +1821,7 @@
+ 	if (!rs->prior_delivered ||
+ 	    tcp_skb_sent_after(tx_tstamp, tp->first_tx_mstamp,
+ 			       scb->end_seq, rs->last_end_seq)) {
++		rs->prior_lost	     = scb->tx.lost;
+ 		rs->prior_delivered_ce  = scb->tx.delivered_ce;
+ 		rs->prior_delivered  = scb->tx.delivered;
+ 		rs->prior_mstamp     = scb->tx.delivered_mstamp;

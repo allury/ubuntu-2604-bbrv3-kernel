@@ -57,6 +57,29 @@ def main():
                 raise SystemExit("tcp_sock timestamp unexpectedly narrowed")
         if ack.count("tcp_stamp32_us_delta(") != 2:
             raise SystemExit("Expected two relocated rate sampling call sites")
+        send = git("show", ":net/ipv4/tcp_output.c").decode()
+        required = {
+            "send snapshot and loss counter": (send, [
+                "static void tcp_set_tx_in_flight(",
+                "in_flight = tcp_packets_in_flight(tp) + tcp_skb_pcount(skb);",
+                "in_flight = TCPCB_IN_FLIGHT_MAX;",
+                "TCP_SKB_CB(skb)->tx.lost\t\t= tp->lost;",
+                "tcp_init_tso_segs(skb, mss_now);\n\t\t\ttcp_set_tx_in_flight(sk, skb);",
+            ]),
+            "ACK sample fields": (ack, [
+                "rs->tx_in_flight     = scb->tx.in_flight;",
+                "rs->prior_lost\t     = scb->tx.lost;",
+                "rs->lost        = tp->lost - rs->prior_lost;",
+                "rs->losses = lost;",
+                "tcp_newly_delivered(sk, delivered, ecn_count, flag)",
+                "rs.is_ece = !!(flag & FLAG_ECE);\n\ttcp_rate_gen(",
+            ]),
+        }
+        for label, (content, fragments) in required.items():
+            if not all(fragment in content for fragment in fragments):
+                raise SystemExit(label + " check failed")
+        if send.count("tcp_set_tx_in_flight(sk, skb);") != 2:
+            raise SystemExit("Expected ordinary and repair send call sites")
         print(json.dumps(dict(base=BASE, patches=checks, source_order_checks="passed",
                               complete_bbrv3_port=False, compiled=False), indent=2))
         print(git("diff", "--cached", "--stat", BASE).decode())

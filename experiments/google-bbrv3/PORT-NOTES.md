@@ -31,3 +31,11 @@
 - 新增 C 辅助函数边界测试，直接提取补丁新增函数，覆盖普通、负向、零值、32 位回绕及有符号边界；由轻量 CI 执行。不是完整内核编译，也不证明长期连接正确。
 
 这两项只是前置补丁，不包含完整 BBRv3 算法，不能安装或作为新正式版发布。
+
+## 第三至第五项适配
+
+- 0003：官方 0e6b441。增加 tx.in_flight 与 rate_sample.tx_in_flight；发送和 TCP_REPAIR 均采集快照。函数放在 tcp_output.c 且保持 static，因为两个调用都在同文件；诊断读取 cwnd 使用 tcp_snd_cwnd()。保留官方的 20 位上限告警与截断逻辑。
+- 0004：官方 3679f3b。发送时记录 tp->lost，ACK 时记录 prior_lost，再计算整个采样区间的 rs.lost。保留现有 rs.losses（当前 ACK 新标记丢包）不变，不能混用两种统计。
+- 0005：官方 500bcfe。仅透传 FLAG_ECE 为 rs.is_ece，保留 Ubuntu tcp_newly_delivered 的 ecn_count 参数。AccECN、低延迟 ECN 和后续 CE 回调尚未适配和验证。
+
+五项串联精确应用已在固定 Ubuntu 提交的临时索引通过；verify_series.py 检查发送快照、repair 调用、丢包字段链路及 ECE 写入位置。源码断言不等同于运行时证明；整核编译和网络测试尚未执行。
