@@ -70,3 +70,11 @@
 - Ubuntu tcp_ecn_send_syn 已迁入 include/net/tcp_ecn.h。将路由提示设置放在现有 use_ecn 分支完成模式设置之后，保留 AccECN_PENDING 和 RFC3168 两种路径。
 - 被动连接仍在 tcp_ca_openreq_child 中读取路由提示。未将“低延迟网络提示”当成“已成功协商 ECN”。
 - 十五项串联精确应用通过，并检查两个初始化点与 AccECN 模式位保留。连接建立后的回退、模式切换及所有 ecn_flags 清零路径仍须与主算法整体复核，不代表 ECN 网络行为通过。
+
+## 第十六项：主算法候选
+
+- 来源 cb31f3d02b1d7cd7cfdff4dd2b8b9d38879904af，包含主算法、私有状态空间、PLB 布局和诊断信息。
+- 旧算法删除上下文适配 Ubuntu 的 WRITE_ONCE 修改。新增代码的共享字段读写仍需完整审查。
+- bbr_can_use_ecn 使用 tcp_ecn_mode_rfc3168() 和 LOW 提示，保守排除尚未验证的 AccECN/协商中状态；这是本项目的适配选择，不是 Google 官方 Ubuntu 支持声明。
+- 十六项串联精确应用通过。新增手动专用 targeted compile 工作流，仅实验分支可运行，只编译相关 IPv4 对象，不发布包。
+- defconfig 对象编译不能替代 Ubuntu 全配置、BPF/BTF、IPv6、整包安装、启动及网络测试。后续重传 ECN 和 tcp_info 补丁仍待完成。

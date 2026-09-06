@@ -1,0 +1,41 @@
+name: Experimental BBR targeted compile
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile:
+    if: github.ref == 'refs/heads/experiment/google-bbrv3-port'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container: ubuntu:26.04
+    steps:
+      - name: Install compiler prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git build-essential flex bison libssl-dev libelf-dev bc python3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Fetch pinned official source and verify series
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch Ubuntu-7.0.0-30.30 https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/resolute kernel
+          test "$(git -C kernel rev-parse HEAD)" = d974a4063f5c03c13b4f241a9ab511750e0b9f12
+          python3 experiments/google-bbrv3/verify_series.py --ubuntu kernel
+          while IFS= read -r patch; do
+            [[ -z "$patch" || "$patch" == \#* ]] && continue
+            git -C kernel apply --check --whitespace=error "$GITHUB_WORKSPACE/experiments/google-bbrv3/patches/$patch"
+            git -C kernel apply --whitespace=error "$GITHUB_WORKSPACE/experiments/google-bbrv3/patches/$patch"
+          done < experiments/google-bbrv3/patches/series
+      - name: Compile changed IPv4 objects without packaging or publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel
+          make defconfig
+          scripts/config --enable TCP_CONG_ADVANCED --module TCP_CONG_BBR --enable INET_DIAG --enable INET_TCP_DIAG
+          make olddefconfig
+          make -j2 net/ipv4/tcp_bbr.o net/ipv4/tcp_input.o net/ipv4/tcp_output.o net/ipv4/tcp_timer.o net/ipv4/tcp.o net/ipv4/tcp_cong.o net/ipv4/tcp_minisocks.o
+          printf '%s\n' 'TARGETED_COMPILE_PASS: not a complete build, BPF/BTF or runtime validation'
