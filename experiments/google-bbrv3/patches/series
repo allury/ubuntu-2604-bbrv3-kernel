@@ -3,3 +3,6 @@
 0003-tcp-inflight-snapshot.patch
 0004-tcp-loss-sampling.patch
 0005-tcp-ece-sampling.patch
+0006-tcp-loss-callback.patch
+0007-tcp-merge-inflight.patch
+0008-tcp-split-inflight.patch

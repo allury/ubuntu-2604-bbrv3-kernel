@@ -62,4 +62,4 @@ sudo python3 experiments/google-bbrv3/network_matrix.py --execute \
 python3 experiments/google-bbrv3/verify_series.py --ubuntu /path/to/ubuntu-linux
 ```
 
-当前含五项官方前置改动，尚非完整 BBRv3 移植，禁止用于生产构建。
+当前含八项官方前置改动，尚非完整 BBRv3 移植，禁止用于生产构建。

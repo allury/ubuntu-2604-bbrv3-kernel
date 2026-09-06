@@ -80,6 +80,16 @@ def main():
                 raise SystemExit(label + " check failed")
         if send.count("tcp_set_tx_in_flight(sk, skb);") != 2:
             raise SystemExit("Expected ordinary and repair send call sites")
+        if "tp->lost += tcp_skb_pcount(skb);\n\tif (ca_ops->skb_marked_lost)" not in ack:
+            raise SystemExit("Loss callback must follow loss counter update")
+        if "void (*skb_marked_lost)(struct sock *sk, const struct sk_buff *skb);" not in header:
+            raise SystemExit("Loss callback declaration missing")
+        for fragment in ("TCP_SKB_CB(skb)->tx.in_flight -= pcount;",
+                         "TCP_SKB_CB(prev)->tx.in_flight += pcount;"):
+            if fragment not in ack:
+                raise SystemExit("Merge accounting missing")
+        if "inflight_prev = TCP_SKB_CB(skb)->tx.in_flight - old_factor;" not in send:
+            raise SystemExit("Split accounting missing")
         print(json.dumps(dict(base=BASE, patches=checks, source_order_checks="passed",
                               complete_bbrv3_port=False, compiled=False), indent=2))
         print(git("diff", "--cached", "--stat", BASE).decode())

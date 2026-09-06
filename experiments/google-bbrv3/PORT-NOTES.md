@@ -39,3 +39,11 @@
 - 0005：官方 500bcfe。仅透传 FLAG_ECE 为 rs.is_ece，保留 Ubuntu tcp_newly_delivered 的 ecn_count 参数。AccECN、低延迟 ECN 和后续 CE 回调尚未适配和验证。
 
 五项串联精确应用已在固定 Ubuntu 提交的临时索引通过；verify_series.py 检查发送快照、repair 调用、丢包字段链路及 ECE 写入位置。源码断言不等同于运行时证明；整核编译和网络测试尚未执行。
+
+## 第六至第八项适配
+
+- 0006：官方 f207893，lost 计数递增之后调用可选 skb_marked_lost。Ubuntu tcp_congestion_ops 成员排列不同，将字段插入 min_tso_segs 后，不照搬旧邻接字段。
+- 0007：官方 88e09e2，合并时转移 tx.in_flight；源 skb 计数不足时告警并归零。算法不改，沿用官方边界行为。
+- 0008：官方 5093de5，分段时重新计算两个 skb 的在途快照；负的历史在途量归零，已标 lost 时避免因先前本地重传失败引发误报。Ubuntu flags 为 u16，保留不变，只调整补丁上下文。
+- 八项串联精确检查通过。新增 test_inflight.py 从实际补丁提取 C 代码，用最小 skb 桩验证普通分段、lost 特例、异常下溢与合并转移；不能代替 packetdrill、内核编译或真实 RACK/RTO 路径测试。
+- 待审阅边界：20 位 in_flight 的合并加法上溢可达性；当前忠实保留官方逻辑，不擅自引入饱和计算。后续补丁审查和测试需覆盖。
