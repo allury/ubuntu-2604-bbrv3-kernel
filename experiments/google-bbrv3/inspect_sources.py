@@ -1,4 +1,4 @@
-"""Read-only source inspection; generated output is NOT a production patch."""
+"""Read-only source inspection; deliberately not named after stdlib inspect."""
 import argparse
 import json
 import pathlib

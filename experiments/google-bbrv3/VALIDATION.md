@@ -10,7 +10,7 @@
 - tcp_bbr.c、tcp_input.c、tcp_output.c、tcp_timer.c 存在不匹配上下文；
 - 官方差异涉及的 net/ipv4/tcp_rate.c 在目标索引中不存在，需要追踪目标版本实现位置，不可直接忽略。
 
-这只是定位结果，不是语义移植结论。inspect.py 可重现检查，尚未生成 Ubuntu 可用的自维护补丁。
+这只是初始定位结果，不是语义移植结论。inspect_sources.py 可重现原始差异检查；后续适配进展见 PORT-NOTES.md。
 
 ## 测试环境
 

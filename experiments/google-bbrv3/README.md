@@ -19,7 +19,7 @@
 准备包含以上提交对象的 Google 与干净 Ubuntu Git 仓库，Ubuntu HEAD 必须为上述固定提交。执行：
 
 ```bash
-python3 experiments/google-bbrv3/inspect.py --google /path/to/google-bbr --ubuntu /path/to/ubuntu-linux --output /tmp/bbrv3-inspect-new
+python3 experiments/google-bbrv3/inspect_sources.py --google /path/to/google-bbr --ubuntu /path/to/ubuntu-linux --output /tmp/bbrv3-inspect-new
 ```
 
 脚本不会联网、修改源码、应用补丁或编译。它记录固定提交、提交序列、所有文件差异，导出 include/ 与 net/ 下的官方原始差异，并对与固定提交一致的 Ubuntu Git 索引执行精确应用检查，避免 Windows 大小写冲突文件干扰；不检查工作区修改。原始差异包含 BBRv1 对照测试相关改动，尚不是最终生产补丁。
