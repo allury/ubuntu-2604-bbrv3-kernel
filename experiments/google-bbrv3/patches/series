@@ -8,3 +8,7 @@
 0008-tcp-split-inflight.patch
 0009-tcp-ce-events.patch
 0010-tcp-tso-callback.patch
+0011-tcp-fast-ack.patch
+0012-tcp-tlp-app-limited.patch
+0013-tcp-tlp-recovery-event.patch
+0014-tcp-tlp-ack-sample.patch

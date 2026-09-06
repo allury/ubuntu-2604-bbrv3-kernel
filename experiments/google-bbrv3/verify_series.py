@@ -113,6 +113,22 @@ def main():
             raise SystemExit("BPF TSO stub missing")
         if "READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_min_tso_segs)" not in send:
             raise SystemExit("Fallback sysctl read protection lost")
+        core = git("show", ":net/ipv4/tcp.c").decode()
+        cong = git("show", ":net/ipv4/tcp_cong.c").decode()
+        if "tp->fast_ack_mode = 0;" not in core or "tcp_sk(sk)->fast_ack_mode = 0;" not in cong:
+            raise SystemExit("fast ACK reset/init missing")
+        if "tp->fast_ack_mode == 1 ||" not in ack:
+            raise SystemExit("fast ACK predicate missing")
+        if "tp->tlp_orig_data_app_limited = TCP_SKB_CB(skb)->tx.is_app_limited;\n\tif (__tcp_retransmit_skb" not in send:
+            raise SystemExit("TLP state must be captured before retransmit")
+        if ack.count("tcp_process_tlp_ack(sk, ack, flag, &rs);") != 2:
+            raise SystemExit("Both TLP ACK paths must receive the sample")
+        if "tcp_process_tlp_ack(sk, ack, flag);" in ack:
+            raise SystemExit("Stale TLP ACK caller")
+        if "tcp_ca_event(sk, CA_EVENT_TLP_RECOVERY);\n\t\ttcp_init_cwnd_reduction(sk);" not in ack:
+            raise SystemExit("TLP notification ordering incorrect")
+        if "rs->is_acking_tlp_retrans_seq = 1;" not in ack:
+            raise SystemExit("TLP ambiguous ACK marking missing")
         print(json.dumps(dict(base=BASE, patches=checks, source_order_checks="passed",
                               complete_bbrv3_port=False, compiled=False), indent=2))
         print(git("diff", "--cached", "--stat", BASE).decode())

@@ -54,3 +54,11 @@
 - 0010：官方 9163f44，改为 tso_segs 回调，包含 BPF 桩、BBR 调用和发送端选择逻辑。保留 Ubuntu 对 fallback sysctl 的 READ_ONCE；保留 bbr_min_tso_segs 辅助函数及已有 BTF kfunc 登记，因为它们不是旧 ops 成员。
 - 十项精确应用通过，检查 CE 标志互不冲突及四个主要实现文件中的旧 TSO ops 引用消除。test_ce_flags.py 对补丁实际新增谓词测试全部 64 种标志组合。
 - TSO 改动仍需全树调用方及 BPF selftests 审阅，随后通过整核编译、BTF 和实际分段行为测试；当前没有这些运行证据。
+
+## 第十一至第十四项适配
+
+- 0011：官方 4d2e564。Ubuntu 已将 recvmsg_inq 放入 tcp_sock_read_txrx 的 u8 位域组，使用剩余空间增加 fast_ack_mode，不按旧布局改成 u32。保留 init/disconnect 清零和官方 ACK 判断逻辑。
+- 0012：官方 a631934。在 nonagle/rate_app_limited 的 u8 组增加一位，保留后面的 Ubuntu AccECN 字段。TLP 重传之前保存原始 skb 的 app-limited 状态。
+- 0013：官方 3ee83ca。恢复事件在 cwnd reduction 之前通知，保留既有恢复步骤。
+- 0014：官方 703f20a。两处 TLP ACK 入口均传递 rs，保留 Ubuntu 的 unlikely 分支及 tcp_in_ack_event 调用。匹配 TLP 序列不等于确定 ACK 来自重传，因此新位只代表歧义匹配，不可当作确定丢包。
+- 十四项临时索引串联精确检查及新增初始化/状态链路检查通过。TLP 重传、重复 ACK、DSACK 和恢复事件仍需真实协议路径测试；尚未整核编译。
