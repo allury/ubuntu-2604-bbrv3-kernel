@@ -62,3 +62,11 @@
 - 0013：官方 3ee83ca。恢复事件在 cwnd reduction 之前通知，保留既有恢复步骤。
 - 0014：官方 703f20a。两处 TLP ACK 入口均传递 rs，保留 Ubuntu 的 unlikely 分支及 tcp_in_ack_event 调用。匹配 TLP 序列不等于确定 ACK 来自重传，因此新位只代表歧义匹配，不可当作确定丢包。
 - 十四项临时索引串联精确检查及新增初始化/状态链路检查通过。TLP 重传、重复 ACK、DSACK 和恢复事件仍需真实协议路径测试；尚未整核编译。
+
+## 第十五项：低延迟 ECN 路由提示
+
+- 官方来源 9120f8037e8b7a025e3998d1ec51b5e0fad837be。
+- Google TCP_ECN_LOW 的原值 16 与 Ubuntu TCP_ECN_MODE_ACCECN 重叠，改用 BIT(5)，不改模式掩码；路由 UAPI 的 RTAX_FEATURE_ECN_LOW 仍使用原 BIT(5)，两个不同命名空间不可混淆。
+- Ubuntu tcp_ecn_send_syn 已迁入 include/net/tcp_ecn.h。将路由提示设置放在现有 use_ecn 分支完成模式设置之后，保留 AccECN_PENDING 和 RFC3168 两种路径。
+- 被动连接仍在 tcp_ca_openreq_child 中读取路由提示。未将“低延迟网络提示”当成“已成功协商 ECN”。
+- 十五项串联精确应用通过，并检查两个初始化点与 AccECN 模式位保留。连接建立后的回退、模式切换及所有 ecn_flags 清零路径仍须与主算法整体复核，不代表 ECN 网络行为通过。

@@ -129,6 +129,19 @@ def main():
             raise SystemExit("TLP notification ordering incorrect")
         if "rs->is_acking_tlp_retrans_seq = 1;" not in ack:
             raise SystemExit("TLP ambiguous ACK marking missing")
+        ecn = git("show", ":include/net/tcp_ecn.h").decode()
+        child = git("show", ":net/ipv4/tcp_minisocks.c").decode()
+        route = git("show", ":include/uapi/linux/rtnetlink.h").decode()
+        if "#define\tTCP_ECN_LOW\t\tBIT(5)" not in header:
+            raise SystemExit("Low ECN must not overlap AccECN")
+        if "#define\tTCP_ECN_MODE_ACCECN\tBIT(4)" not in header:
+            raise SystemExit("AccECN mode changed")
+        if ecn.count("tcp_set_ecn_low_from_dst(sk, dst);") != 1 or child.count("tcp_set_ecn_low_from_dst(sk, dst);") != 1:
+            raise SystemExit("Active/passive low ECN route initialization missing")
+        if "tcp_ecn_mode_set(tp, TCP_ECN_MODE_PENDING);" not in ecn:
+            raise SystemExit("AccECN SYN negotiation lost")
+        if "#define RTAX_FEATURE_ECN_LOW\t\t(1 << 5)" not in route:
+            raise SystemExit("Low ECN route flag missing")
         print(json.dumps(dict(base=BASE, patches=checks, source_order_checks="passed",
                               complete_bbrv3_port=False, compiled=False), indent=2))
         print(git("diff", "--cached", "--stat", BASE).decode())
