@@ -1,6 +1,9 @@
 name: Experimental BBR targeted compile
 on:
   workflow_dispatch:
+  push:
+    branches: [experiment/google-bbrv3-port]
+    paths: [.github/workflows/experimental-compile.yml]
 permissions:
   contents: read
 jobs:
