@@ -47,3 +47,10 @@
 - 0008：官方 5093de5，分段时重新计算两个 skb 的在途快照；负的历史在途量归零，已标 lost 时避免因先前本地重传失败引发误报。Ubuntu flags 为 u16，保留不变，只调整补丁上下文。
 - 八项串联精确检查通过。新增 test_inflight.py 从实际补丁提取 C 代码，用最小 skb 桩验证普通分段、lost 特例、异常下溢与合并转移；不能代替 packetdrill、内核编译或真实 RACK/RTO 路径测试。
 - 待审阅边界：20 位 in_flight 的合并加法上溢可达性；当前忠实保留官方逻辑，不擅自引入饱和计算。后续补丁审查和测试需覆盖。
+
+## 第九与第十项适配
+
+- 0009：官方 6642024 的 WANTS_CE_EVENTS 原为 0x4，与 Ubuntu NEEDS_ACCECN 的 BIT(2) 冲突；改用空闲 BIT(5)，保留 Ubuntu 原有五个位及 MASK。只更改两个 CE 事件通知判断，保留 tcp_ecn_disabled 的提前返回与 RFC3168/AccECN 分支，未宣称完整 ECN 验收。
+- 0010：官方 9163f44，改为 tso_segs 回调，包含 BPF 桩、BBR 调用和发送端选择逻辑。保留 Ubuntu 对 fallback sysctl 的 READ_ONCE；保留 bbr_min_tso_segs 辅助函数及已有 BTF kfunc 登记，因为它们不是旧 ops 成员。
+- 十项精确应用通过，检查 CE 标志互不冲突及四个主要实现文件中的旧 TSO ops 引用消除。test_ce_flags.py 对补丁实际新增谓词测试全部 64 种标志组合。
+- TSO 改动仍需全树调用方及 BPF selftests 审阅，随后通过整核编译、BTF 和实际分段行为测试；当前没有这些运行证据。

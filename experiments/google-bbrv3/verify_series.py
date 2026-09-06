@@ -21,9 +21,12 @@ def main():
                    GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0")
 
         def git(*argv):
-            return subprocess.run(
+            result = subprocess.run(
                 ["git", "-c", "safe.directory=" + str(repo), "-C", str(repo), *argv],
-                env=env, capture_output=True, check=True).stdout
+                env=env, capture_output=True)
+            if result.returncode:
+                raise SystemExit(result.stderr.decode(errors="replace"))
+            return result.stdout
 
         git("cat-file", "-e", BASE + "^{commit}")
         git("read-tree", BASE)
@@ -90,6 +93,26 @@ def main():
                 raise SystemExit("Merge accounting missing")
         if "inflight_prev = TCP_SKB_CB(skb)->tx.in_flight - old_factor;" not in send:
             raise SystemExit("Split accounting missing")
+        import re
+        flags = re.findall(r"^#define (TCP_CONG_\w+)\s+BIT\((\d+)\)", header, re.M)
+        values = dict(flags)
+        if values.get("TCP_CONG_WANTS_CE_EVENTS") != "5":
+            raise SystemExit("CE request must use the free Ubuntu bit")
+        if len(set(values.values())) != len(values):
+            raise SystemExit("Congestion-control flag collision")
+        if values.get("TCP_CONG_NEEDS_ACCECN") != "2":
+            raise SystemExit("Ubuntu AccECN flag changed")
+        if ack.count("tcp_ca_wants_ce_events(sk)") != 2:
+            raise SystemExit("Expected two CE notification predicates")
+        bpf = git("show", ":net/ipv4/bpf_tcp_ca.c").decode()
+        bbr = git("show", ":net/ipv4/tcp_bbr.c").decode()
+        for content in (header, bpf, bbr, send):
+            if "(*min_tso_segs)" in content or ".min_tso_segs" in content or "ca_ops->min_tso_segs" in content:
+                raise SystemExit("Stale TSO callback interface")
+        if ".tso_segs = bpf_tcp_ca_tso_segs," not in bpf:
+            raise SystemExit("BPF TSO stub missing")
+        if "READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_min_tso_segs)" not in send:
+            raise SystemExit("Fallback sysctl read protection lost")
         print(json.dumps(dict(base=BASE, patches=checks, source_order_checks="passed",
                               complete_bbrv3_port=False, compiled=False), indent=2))
         print(git("diff", "--cached", "--stat", BASE).decode())

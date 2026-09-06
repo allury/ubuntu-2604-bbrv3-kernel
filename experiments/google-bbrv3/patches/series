@@ -6,3 +6,5 @@
 0006-tcp-loss-callback.patch
 0007-tcp-merge-inflight.patch
 0008-tcp-split-inflight.patch
+0009-tcp-ce-events.patch
+0010-tcp-tso-callback.patch

@@ -1,0 +1,62 @@
+From: Yousuk Seung <ysseung@google.com>
+Subject: [EXPERIMENT 9] tcp: request CE events independently of ECN requirement
+
+Upstream-Commit: 6642024274d7f80ed00044962dcfbe301484edc9
+Upstream-Repository: https://github.com/google/bbr.git
+
+Ubuntu reserves BIT(2)..BIT(4) for AccECN and negotiation policies.
+Use BIT(5) for WANTS_CE_EVENTS, preserving all existing flags and
+the existing tcp_ecn_disabled guard and RFC3168/AccECN branches.
+Only change the two event notification predicates.
+Original authorship and Linux source licensing are retained.
+
+diff --git a/include/net/tcp.h b/include/net/tcp.h
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -1243,6 +1243,9 @@
+ #define TCP_CONG_NO_FALLBACK_RFC3168	BIT(4)
++/* Wants notification of CE events without requiring ECN negotiation. */
++#define TCP_CONG_WANTS_CE_EVENTS		BIT(5)
+ #define TCP_CONG_MASK  (TCP_CONG_NON_RESTRICTED | TCP_CONG_NEEDS_ECN | \
+ 			TCP_CONG_NEEDS_ACCECN | TCP_CONG_ECT_1_NEGOTIATION | \
+-			TCP_CONG_NO_FALLBACK_RFC3168)
++			TCP_CONG_NO_FALLBACK_RFC3168 | \
++			TCP_CONG_WANTS_CE_EVENTS)
+ 
+ union tcp_cc_info;
+@@ -1390,6 +1393,14 @@
+ #endif
+ 
++static inline bool tcp_ca_wants_ce_events(const struct sock *sk)
++{
++	const struct inet_connection_sock *icsk = inet_csk(sk);
++
++	return icsk->icsk_ca_ops->flags & (TCP_CONG_NEEDS_ECN |
++					   TCP_CONG_WANTS_CE_EVENTS);
++}
++
+ static inline bool tcp_ca_needs_ecn(const struct sock *sk)
+ {
+ 	const struct inet_connection_sock *icsk = inet_csk(sk);
+ 
+diff --git a/net/ipv4/tcp_input.c b/net/ipv4/tcp_input.c
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -359,7 +359,7 @@
+ 		break;
+ 	case INET_ECN_CE:
+-		if (tcp_ca_needs_ecn(sk))
++		if (tcp_ca_wants_ce_events(sk))
+ 			tcp_ca_event(sk, CA_EVENT_ECN_IS_CE);
+ 
+ 		if (!(tp->ecn_flags & TCP_ECN_DEMAND_CWR) &&
+ 		    tcp_ecn_mode_rfc3168(tp)) {
+@@ -377,7 +377,7 @@
+ 		break;
+ 	default:
+-		if (tcp_ca_needs_ecn(sk))
++		if (tcp_ca_wants_ce_events(sk))
+ 			tcp_ca_event(sk, CA_EVENT_ECN_NO_CE);
+ 		if (!tcp_ecn_mode_rfc3168(tp))
+ 			break;
+ 		tp->ecn_flags |= TCP_ECN_SEEN;

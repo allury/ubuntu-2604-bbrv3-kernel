@@ -20,4 +20,5 @@ jobs:
           python3 experiments/google-bbrv3/test_network_matrix.py
           python3 experiments/google-bbrv3/test_timestamp.py
           python3 experiments/google-bbrv3/test_inflight.py
+          python3 experiments/google-bbrv3/test_ce_flags.py
           python3 experiments/google-bbrv3/network_matrix.py
