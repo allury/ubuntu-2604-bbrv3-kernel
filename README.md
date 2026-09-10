@@ -45,7 +45,7 @@ journalctl -u bbrv3-verify -b --no-pager
 sudo bash /var/lib/bbrv3-installer/install-bbrv3.sh test
 ```
 
-p2 的预期内核为 `7.0.0-13002-generic`。若启动失败，在 GRUB 选择保留的原装内核；无回退内核则使用服务商救援环境。不要在新版本验收前删除旧内核。
+预期内核以所选发布页为准。例如 `7.0.0-30.30-p2` 对应 `7.0.0-13002-generic`；不同源码版本的 p2 并非同一内核。若启动失败，在 GRUB 选择保留的原装内核；无回退内核则使用服务商救援环境。不要在新版本验收前删除旧内核。
 
 ## 自动编译与发布
 
@@ -71,7 +71,7 @@ v1.1.0 增加磁盘空间预算、安装锁和镜像/initramfs/GRUB 引用检查
 ## 源码与信任边界
 
 - 内核：[Ubuntu 内核团队 resolute 仓库](https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/resolute)，精确发布标签；解析已签名的正式 APT 元数据，排除 proposed、backports 和 PPA。
-- BBRv3：[Google BBR](https://github.com/google/bbr/tree/v3)；当前 Linux 7.0 移植补丁来自第三方 [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3)，不是 Google 官方 Ubuntu 补丁，补丁内容以 SHA-256 固定并执行精确应用检查。
+- BBRv3：[Google BBR](https://github.com/google/bbr/tree/v3)；当前 Linux 7.0 移植补丁来自第三方 [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3)，不是 Google 官方 Ubuntu 补丁。补丁存放在本仓库，记录来源提交和 SHA-256，并执行精确应用检查；当前尚未实现批准哈希白名单比对，详见 [补丁策略](patches/README.md)。
 - OpenZFS：Ubuntu 官方 `zfs-dkms` 源码，针对自定义 ABI 编译并使用该内核构建密钥签名。
 - 构建与恢复：[构建恢复说明](docs/BUILD-RECOVERY.md)；[补丁策略](patches/README.md)。
 

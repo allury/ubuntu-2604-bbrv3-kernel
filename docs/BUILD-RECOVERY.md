@@ -1,36 +1,28 @@
-# Recovering a kernel build
+# 内核构建恢复
 
-The workflow compiles and packages Ubuntu ZFS against the exact released
-official headers before starting the full kernel build. This preflight also
-exercises encrypted checkpoint save and restore. It does not replace tests
-against the custom kernel and its headers.
+## 检查点
 
-After the core build succeeds, `core-checkpoint` is uploaded before ZFS starts.
-It contains the core Debian packages, checksums and an encrypted archive of
-the staged headers, DKMS tools, kernel configuration and module signing key.
-The archive uses GnuPG authenticated symmetric encryption with the repository
-secret `KERNEL_CHECKPOINT_PASSPHRASE`. Preserve this secret while recovery
-artifacts are needed. Never upload plaintext signing keys.
+完整内核构建前，工作流先用对应 Ubuntu 官方头文件预编译 ZFS，并测试加密检查点保存与恢复；这不能替代自定义内核及头文件的验收。
 
-To continue after a ZFS or verification failure:
+核心内核包构建成功后、配套 ZFS 构建前上传 `core-checkpoint` 制品，包含核心 Debian 包、校验和，以及加密的暂存头文件、DKMS 工具、配置和模块签名材料。
 
-1. Confirm the failed run has a non-expired `core-checkpoint` artifact.
-2. Fix the failing ZFS or verification code on `main`.
-3. Dispatch `build-kernel.yml`, select the same explicit `source_version`, set
-   `resume_run_id` to the run containing the checkpoint and leave
-   `preflight_only` false.
-4. The workflow reruns the ZFS preflight, fetches the exact source and patch,
-   validates and decrypts the checkpoint, skips full kernel compilation, then
-   rebuilds ZFS and runs installation and QEMU gates before publishing.
+归档使用 GnuPG 对称加密及完整性保护，密码来自仓库 Secret `KERNEL_CHECKPOINT_PASSPHRASE`。仍需恢复检查点时不要更换或删除该 Secret；禁止上传明文私钥。
 
-Only reuse checkpoints when core kernel source, patch and packaging inputs are
-unchanged. Changing the kernel configuration, ABI scheme or core build logic
-requires a new build. Source version, release, package version and BBR patch
-digest are checked during restoration. Recovery does not bypass publishing
-gates and does not make incomplete packages a stable release.
+## 从失败处继续
 
-`preflight_only=true` runs the inexpensive integration check without compiling
-the full kernel. Failed runs from before checkpoint support cannot be resumed.
-Recovery is available only until the artifact expires; when retention is one
-day, recover within that window. GitHub's ordinary rerun of a failed build job
-does not automatically select a checkpoint: use `resume_run_id` explicitly.
+1. 确认失败运行中存在尚未过期的 `core-checkpoint` 制品。
+2. 在 `main` 修复 ZFS 或验收代码，不改核心构建输入。
+3. 手动运行 `build-kernel.yml`：`source_version` 填原运行的明确版本（不要填 `auto`），`resume_run_id` 填保存检查点的运行 ID，保持 `preflight_only=false`。
+4. 工作流重跑 ZFS 预检、取得对应源码和补丁、验证解密检查点，跳过核心内核编译，继续 ZFS 构建及安装、QEMU 验收，全部通过后才发布。
+
+GitHub 普通的 “Re-run failed jobs” 不会自动选择检查点，需显式使用 `resume_run_id`。
+
+## 复用限制
+
+仅当核心源码、补丁、配置和打包输入保持一致时才可复用。改变 ABI 方案、内核配置或核心构建逻辑，必须重新构建。
+
+恢复脚本检查源码版本、内核版本、包版本和 BBR 补丁哈希，但没有自动覆盖所有构建输入变化。维护者仍需审核新旧提交差异，不能把元数据匹配视为全部输入相同的证明。
+
+当前工作流未显式设置 `retention-days`，制品有效期由仓库或组织设置决定。检查点已过期、未成功上传或不支持检查点的旧运行，不能使用此方式恢复。
+
+`preflight_only=true` 仅执行不含完整内核编译的预检，不发布内核。恢复流程不会绕过发布验收门槛。
