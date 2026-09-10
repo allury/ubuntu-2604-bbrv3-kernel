@@ -1,7 +1,10 @@
 """Exercise the actual embedded shell branches without installing or rebooting."""
 import pathlib
 import subprocess
+import tempfile
+import types
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEXT = (ROOT / "installer/install.sh").read_text()
@@ -64,6 +67,45 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("raw.githubusercontent.com", TEXT)
         self.assertNotIn("--force-depends", TEXT)
         self.assertIn('if [[ "$reboot_requested" == true ]]; then systemctl reboot; fi', INNER)
+
+    def test_independent_runtime(self):
+        helper = TEXT.split("<<'BBRV3_ENABLE_V1_1'\n", 1)[1].split("\nBBRV3_ENABLE_V1_1", 1)[0]
+        for script in (helper, INNER):
+            result = subprocess.run(['bash', '-n'], input=script, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"$runtime_dir/enable-bbrv3.sh"', INNER)
+        self.assertNotIn('install -m 0755 enable-bbrv3.sh', INNER)
+        self.assertIn('sysctl -p /etc/sysctl.d/99-bbrv3.conf', helper)
+        self.assertNotIn('sysctl --system', helper)
+
+    def test_boot_files_gate(self):
+        function = INNER.split('boot_files_ready() {', 1)[1].split("fallback_release=''", 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / 'grub').mkdir()
+            (root / 'grub/grub.cfg').write_text('linux /vmlinuz-test\ninitrd /initrd.img-test\n')
+            (root / 'vmlinuz-test').write_text('image')
+            code = ('boot_files_ready() {' + function).replace('/boot/', tmp + '/')
+            self.assertNotEqual(bash(code + '\nboot_files_ready test').returncode, 0)
+            (root / 'initrd.img-test').write_text('initramfs')
+            self.assertEqual(bash(code + '\nboot_files_ready test').returncode, 0)
+            (root / 'grub/grub.cfg').write_text('linux /vmlinuz-test\n')
+            self.assertNotEqual(bash(code + '\nboot_files_ready test').returncode, 0)
+
+    def test_space_budget_same_device(self):
+        code = INNER.split("<<'SPACE_CHECK'\n", 1)[1].split('\nSPACE_CHECK', 1)[0]
+        # Each check separately would fit; their summed requirement must fail.
+        with mock.patch('sys.argv', ['check', 'kernel.deb']), \
+             mock.patch('subprocess.check_output', return_value='1024'), \
+             mock.patch('os.stat', return_value=types.SimpleNamespace(st_dev=1)), \
+             mock.patch('shutil.disk_usage', return_value=types.SimpleNamespace(free=800 * 1024**2)):
+            with self.assertRaises(SystemExit):
+                exec(compile(code, '<space-check>', 'exec'), {})
+        with mock.patch('sys.argv', ['check', 'kernel.deb']), \
+             mock.patch('subprocess.check_output', return_value='1024'), \
+             mock.patch('os.stat', return_value=types.SimpleNamespace(st_dev=1)), \
+             mock.patch('shutil.disk_usage', return_value=types.SimpleNamespace(free=2 * 1024**3)):
+            exec(compile(code, '<space-check>', 'exec'), {})
 
 
 if __name__ == "__main__":

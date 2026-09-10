@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Independently versioned installer v1.0.0, derived from stable p2.
+# Independently versioned installer v1.1.0, derived from stable p2.
 # Download one stable GitHub Release, verify it, install it, and
 # optionally reboot. The post-boot systemd service performs the runtime test.
 set -euo pipefail
@@ -58,7 +58,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl --fail --location --silent --show-error \
+curl --fail --location --silent --show-error --retry 3 --connect-timeout 20 --max-time 120 \
   -H 'Accept: application/vnd.github+json' \
   -H 'X-GitHub-Api-Version: 2022-11-28' \
   "$api_url" > "$download_dir/release.json"
@@ -68,6 +68,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import sys
 import urllib.parse
 import urllib.request
@@ -123,6 +124,8 @@ for prefix in required_deb_prefixes:
 total_size = sum(int(asset.get("size", -1)) for asset in assets)
 if total_size < 1 or total_size > 2_000_000_000:
     raise SystemExit(f"ERROR: Unexpected total release size: {total_size}")
+if shutil.disk_usage(output_path).free < total_size + 256 * 1024 * 1024:
+    raise SystemExit("ERROR: Insufficient download space (assets plus 256 MiB reserve required).")
 
 output = pathlib.Path(output_path)
 expected_prefix = f"/{repository}/releases/download/{urllib.parse.quote(tag, safe='')}/"
@@ -155,6 +158,26 @@ rm -f -- "$download_dir/release.json"
   # Keep the release files unchanged so their complete SHA256SUMS remains valid.
   # The executable installer comes from this single versioned file, not mutable main.
   mkdir .installer-runtime
+  cat > .installer-runtime/enable-bbrv3.sh <<'BBRV3_ENABLE_V1_1'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $EUID == 0 && "$(uname -r)" == "${1:?Expected kernel required}" ]] || exit 1
+modprobe tcp_bbr
+[[ "$(cat /sys/module/tcp_bbr/version)" == 3 ]] || exit 1
+[[ "$(modinfo -F version tcp_bbr)" == 3 ]] || exit 1
+vermagic="$(modinfo -F vermagic tcp_bbr)"
+[[ "${vermagic%% *}" == "$(uname -r)" ]] || exit 1
+install -D -m 0644 /var/lib/bbrv3-installer/bbrv3.sysctl.conf /etc/sysctl.d/99-bbrv3.conf
+# Apply only this installer's configuration, not unrelated system settings.
+sysctl -p /etc/sysctl.d/99-bbrv3.conf
+[[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == bbr ]] || exit 1
+[[ "$(sysctl -n net.core.default_qdisc)" == fq ]] || exit 1
+printf '%s\n' 'PASS: BBRv3 enabled; default qdisc=fq (existing interface qdiscs are unchanged).'
+BBRV3_ENABLE_V1_1
+  cat > .installer-runtime/bbrv3.sysctl.conf <<'BBRV3_CONFIG_V1_1'
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+BBRV3_CONFIG_V1_1
   cat > .installer-runtime/install-bbrv3.sh <<'BBRV3_INSTALLER_V1'
 #!/usr/bin/env bash
 # Run from an extracted, reviewed release directory. Never selects latest prerelease.
@@ -226,11 +249,13 @@ done
 source /etc/os-release
 [[ "$ID" == ubuntu && "$VERSION_ID" == 26.04 ]] || die 'Requires Ubuntu 26.04.'
 [[ "$(dpkg --print-architecture)" == amd64 ]] || die 'Requires amd64.'
-for tool in systemctl systemd-detect-virt python3 apt-get dpkg dpkg-deb dpkg-query findmnt modinfo modprobe readlink update-grub sha256sum; do
+for tool in systemctl systemd-detect-virt python3 apt-get dpkg dpkg-deb dpkg-query findmnt modinfo modprobe readlink update-grub sha256sum flock; do
   command -v "$tool" >/dev/null || die "Missing prerequisite: $tool"
 done
 if systemd-detect-virt --container --quiet; then die 'Containers cannot replace the host kernel.'; fi
 [[ -d /run/systemd/system && -f /boot/grub/grub.cfg ]] || die 'Requires systemd and GRUB.'
+exec 9>/run/lock/bbrv3-installer.lock
+flock --nonblock 9 || die 'Another BBRv3 installation is in progress.'
 dpkg_audit="$(dpkg --audit 2>&1 || true)"
 [[ -z "$dpkg_audit" ]] || {
   printf '%s\n' "$dpkg_audit" >&2
@@ -300,6 +325,12 @@ zfs_depends="$(dpkg-deb -f "${package_files[linux-main-modules-zfs-$expected]}" 
 grep -Fq "linux-image-$expected | linux-image-unsigned-$expected" <<<"$zfs_depends" ||
   die 'The OpenZFS package does not require the matching kernel image.'
 
+boot_files_ready() {
+  local release="$1"
+  [[ -s "/boot/vmlinuz-$release" && -s "/boot/initrd.img-$release" ]] &&
+    grep -Fq -- "vmlinuz-$release" /boot/grub/grub.cfg &&
+    grep -Fq -- "initrd.img-$release" /boot/grub/grub.cfg
+}
 fallback_release=''
 mapfile -t installed_images < <(
   dpkg-query -W \
@@ -317,7 +348,8 @@ for image_record in "${installed_images[@]}"; do
     linux-image-*) candidate_release="${image_package#linux-image-}" ;;
     *) continue ;;
   esac
-  [[ "$candidate_release" != "$expected" && -s "/boot/vmlinuz-$candidate_release" ]] || continue
+  [[ "$candidate_release" != "$expected" ]] || continue
+  boot_files_ready "$candidate_release" || continue
   fallback_release="$candidate_release"
   break
 done
@@ -338,6 +370,28 @@ if [[ -n "$mounted_zfs" || -n "$imported_zpools" ]]; then
   printf '%s\n' 'ZFS usage detected; the matching real OpenZFS kernel package is present and will be installed.'
 fi
 # Dependency failures must stop before package installation or reboot.
+python3 - "${packages[@]}" <<'SPACE_CHECK'
+import os
+import shutil
+import subprocess
+import sys
+
+# Conservatively budget all unpacked package data on every destination device.
+# Same-device requirements are summed, not checked independently.
+unpacked = sum(int(subprocess.check_output(
+    ['dpkg-deb', '-f', p, 'Installed-Size'], text=True).strip()) * 1024
+    for p in sys.argv[1:])
+requirements = {}
+for path, amount in [('/usr', unpacked + 512 * 1024**2),
+                     ('/boot', 512 * 1024**2), ('/var', 256 * 1024**2)]:
+    device = os.stat(path).st_dev
+    previous = requirements.get(device, (path, 0))
+    requirements[device] = (previous[0], previous[1] + amount)
+for path, required in requirements.values():
+    if shutil.disk_usage(path).free < required:
+        raise SystemExit(f'ERROR: Insufficient space on {path}: require {required} bytes free.')
+print('PASS: conservative installation disk-space preflight')
+SPACE_CHECK
 apt-get --simulate --no-remove install "${packages[@]}"
 apt-get --yes --no-remove install "${packages[@]}"
 apt-get check
@@ -363,10 +417,15 @@ installed_zfs_owner="${installed_zfs_owner%%:*}"
 [[ "$installed_zfs_owner" == "linux-main-modules-zfs-$expected" ]] ||
   die 'The target OpenZFS module is not owned by the matching release package.'
 update-grub
+boot_files_ready "$expected" || die 'Target image/initramfs or GRUB references missing; refusing reboot.'
+if [[ -n "$fallback_release" ]]; then
+  boot_files_ready "$fallback_release" || die 'Fallback boot files disappeared; refusing reboot.'
+fi
 install -d -m 0700 "$state"
 install -m 0755 "${BASH_SOURCE[0]}" "$state/install-bbrv3.sh"
-install -m 0755 enable-bbrv3.sh "$state/enable-bbrv3.sh"
-install -m 0644 bbrv3.sysctl.conf "$state/bbrv3.sysctl.conf"
+runtime_dir="$(dirname -- "${BASH_SOURCE[0]}")"
+install -m 0755 "$runtime_dir/enable-bbrv3.sh" "$state/enable-bbrv3.sh"
+install -m 0644 "$runtime_dir/bbrv3.sysctl.conf" "$state/bbrv3.sysctl.conf"
 printf '%s\n' "$expected" > "$state/expected-release"
 cat > /etc/systemd/system/bbrv3-verify.service <<'UNIT'
 [Unit]
