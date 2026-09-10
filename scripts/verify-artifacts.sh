@@ -147,15 +147,20 @@ mv "$manifest_tmp" "$release_dir/PACKAGE-MANIFEST.tsv"
 )
 
 {
-  printf '%s\n\n' '# Ubuntu 26.04 BBRv3 kernel'
-  printf '%s\n' "- Ubuntu source package: linux $source_version"
-  printf '%s\n' "- Custom kernel release: $kernel_release"
-  printf '%s\n' "- Package version: $package_version"
-  printf '%s\n' '- Congestion-control selector after boot: bbr (not bbr3)'
-  printf '%s\n\n' '- BBR module version verified from the package: 3'
-  printf '%s\n' 'The custom kernel coexists with Canonical kernel packages; keep a Canonical fallback installed.'
-  printf '%s\n' "A matching $required_zfs package is included and its locally signed spl/zfs module vermagic was verified."
-  printf '%s\n' 'The kernel image is not Canonical-signed. Secure Boot requires image signing and trust enrollment, or it must be disabled.'
+  printf '%s\n\n' '# Ubuntu 26.04 BBRv3 内核'
+  printf '%s\n' "- Ubuntu 源码包：linux $source_version"
+  printf '%s\n' "- 自定义内核版本：$kernel_release"
+  printf '%s\n' "- 软件包版本：$package_version"
+  printf '%s\n' '- 启动后的拥塞控制名称：bbr（不是 bbr3）'
+  printf '%s\n\n' '- 已从软件包验证 BBR 模块版本：3'
+  printf '%s\n\n' '本发布仅在完整构建、干净环境安装检查及 QEMU 启动冒烟测试通过后生成；这些检查不代表所有硬件和网络场景均已验证。'
+  printf '%s\n' '自定义内核可与 Canonical 官方内核共存，请保留官方内核作为回退。'
+  printf '%s\n' "包含配套的 $required_zfs 软件包，已验证本地签名的 spl/zfs 模块及其 vermagic 与目标内核匹配。"
+  printf '%s\n\n' '内核镜像未经 Canonical 签名。使用 Secure Boot 需另行签名并注册信任，否则应关闭 Secure Boot。'
+  printf '%s\n\n' '## 安装'
+  printf '%s\n\n' '一键安装器独立版本化，不随内核自动构建更新。安装命令及无回退内核时的显式选项见 [项目安装说明](https://github.com/allury/ubuntu-2604-bbrv3-kernel#安装)。'
+  printf '%s\n' '独立安装器默认选择最新正式内核。如需固定本版本，请追加 --tag 参数，并填写本发布页的完整标签。'
+  printf '%s\n' '内核附件中的历史脚本为兼容现有校验流程而保留，不是独立安装器的新版本。请使用项目安装说明中的独立入口。'
 } > "$release_dir/RELEASE-NOTES.md"
 
 printf 'Verified %d Debian packages for %s.\n' "${#packages[@]}" "$kernel_release"
