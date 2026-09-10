@@ -2,7 +2,7 @@
 
 基于 Canonical 已发布的 Ubuntu 26.04 generic 内核源码与配置，在完整 TCP 栈中合入 BBRv3，为 amd64 主机提供内核映像、模块、开发头文件及 ABI 匹配的真实 OpenZFS 模块包。
 
-当前正式版：`ubuntu-26.04-bbrv3-7.0.0-30.30-p2`，内核 `7.0.0-13002-generic`。构建代码以通过验收的提交 `db2c4b0` 为基准。项目不是 Canonical 官方产品，也不包含其支持。
+正式内核持续跟随 Ubuntu 已发布版本更新，具体版本见下方发布页。项目不是 Canonical 官方产品，也不包含其支持。
 
 [查看正式版本](https://github.com/allury/ubuntu-2604-bbrv3-kernel/releases/latest)
 
@@ -19,7 +19,7 @@
 要求已安装官方回退内核；缺失时先运行 `sudo apt-get update && sudo apt-get install linux-image-generic`。
 
 ```bash
-curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.0.0/installer/install.sh -o install-bbrv3.sh &&
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.1.0/installer/install.sh -o install-bbrv3.sh &&
 sudo bash install-bbrv3.sh --reboot
 ```
 
@@ -28,7 +28,7 @@ sudo bash install-bbrv3.sh --reboot
 仅在接受风险后使用。此参数只跳过官方回退内核存在性检查，不跳过校验和、依赖、系统环境和 Secure Boot 检查。没有可用回退内核时，启动失败可能需要救援控制台恢复。
 
 ```bash
-curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.0.0/installer/install.sh -o install-bbrv3.sh &&
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.1.0/installer/install.sh -o install-bbrv3.sh &&
 sudo bash install-bbrv3.sh --allow-no-fallback --reboot
 ```
 
@@ -62,11 +62,11 @@ p2 的预期内核为 `7.0.0-13002-generic`。若启动失败，在 GRUB 选择�
 
 ## 独立安装器
 
-`installer/install.sh` 从稳定 p2 安装逻辑派生，增加显式 `--allow-no-fallback`。固定标签 `installer-v1.0.0` 管理安装器版本；更新安装器不需要编译内核，也不修改 p2 的安装包或附带脚本。
+`installer/install.sh` 从稳定 p2 安装逻辑派生，支持显式 `--allow-no-fallback`。当前固定标签为 `installer-v1.1.0`，旧版 `installer-v1.0.0` 保留；更新安装器不需要编译内核，也不修改已发布内核包或附带脚本。
 
-安装器下载同一内核 Release 的文件，完整验证 `SHA256SUMS`，再运行自身附带的安装逻辑。不从可变的 `main` 下载并混用安装组件。内核构建流程中的历史脚本保持稳定基线，README 的命令使用独立入口。
+安装器下载同一内核 Release 的文件，完整验证 `SHA256SUMS`，再运行自身附带的安装逻辑、BBR 启用脚本和配置。不执行内核附件中的安装脚本，也不从可变的 `main` 下载运行组件。历史附件仍保留以兼容旧安装器。
 
-安装器测试覆盖参数传递及回退检查分支，不等同于所有服务器的端到端重启验证。
+v1.1.0 增加磁盘空间预算、安装锁和镜像/initramfs/GRUB 引用检查，详见 [更新记录](installer/CHANGELOG.md)。不修改默认引导项、不提供启动失败自动回滚；自动化测试不等同于所有服务器的端到端重启验证。
 
 ## 源码与信任边界
 
