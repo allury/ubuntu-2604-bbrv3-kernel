@@ -194,7 +194,7 @@ mv "$manifest_tmp" "$release_dir/PACKAGE-MANIFEST.tsv"
   else
     printf '%s\n\n' "- 补丁涉及的文件相对审核基线 $drift_baseline 有 $drift_changed 个发生变化（+$drift_added/-$drift_removed 行），详见附件 PATCH-BASELINE-DRIFT.txt；补丁能精确应用不代表这些变化已经过人工审核"
   fi
-  printf '%s\n\n' '本发布仅在完整构建、干净环境安装检查及 QEMU 启动冒烟测试通过后生成；这些检查不代表所有硬件和网络场景均已验证。'
+  printf '%s\n\n' '本发布仅在完整构建、干净环境安装检查、QEMU 启动冒烟测试，以及 Ubuntu 26.04 云镜像虚拟机中的安装与重启验收通过后生成；这些检查不代表所有硬件、服务商引导配置和网络场景均已验证。'
   printf '%s\n' '自定义内核可与 Canonical 官方内核共存，请保留官方内核作为回退。'
   printf '%s\n' "包含配套的 $required_zfs 软件包，已验证本地签名的 spl/zfs 模块及其 vermagic 与目标内核匹配。"
   printf '%s\n\n' '内核镜像未经 Canonical 签名。使用 Secure Boot 需另行签名并注册信任，否则应关闭 Secure Boot。'

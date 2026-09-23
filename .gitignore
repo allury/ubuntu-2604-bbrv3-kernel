@@ -7,6 +7,8 @@ kernel/
 /preflight/
 /qemu/
 /qemu-console.log
+/vm/
+/vm-console.log
 __pycache__/
 *.pyc
 *.pem

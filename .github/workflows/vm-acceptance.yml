@@ -1,0 +1,84 @@
+name: VM acceptance
+
+# Install the latest stable release in a full Ubuntu 26.04 cloud-image VM with
+# the independent installer's installation logic, reboot through GRUB and wait
+# for the installer's boot-time verification. It runs when the installer or
+# the VM test changes; the release workflow runs the same test before it
+# publishes a new kernel.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - installer/**
+      - tests/vm-*.sh
+      - .github/workflows/vm-acceptance.yml
+  pull_request:
+    paths:
+      - installer/**
+      - tests/vm-*.sh
+      - .github/workflows/vm-acceptance.yml
+
+permissions: {}
+
+concurrency:
+  group: vm-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vm-acceptance:
+    name: Install the latest stable release in an Ubuntu 26.04 VM and reboot into it
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download the latest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          tag="$(jq -r .tag_name <<<"$release_json")"
+          [[ "$tag" =~ ^ubuntu-26\.04-bbrv3-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)*-p[1-9][0-9]*$ ]]
+          [[ "$(jq -r .prerelease <<<"$release_json")" == false ]]
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir release
+          (cd release && sha256sum --check --strict SHA256SUMS)
+          image_package="$(dpkg-deb -f release/linux-image-unsigned-*.deb Package)"
+          kernel_release="${image_package#linux-image-unsigned-}"
+          printf 'KERNEL_RELEASE=%s\n' "$kernel_release" >> "$GITHUB_ENV"
+          printf '使用已发布的 %s（%s）做虚拟机安装与重启验收。\n' "$tag" "$kernel_release" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install QEMU and the Ubuntu cloud image keyring
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils ubuntu-cloudimage-keyring
+
+      - name: Let QEMU use KVM when the runner provides it
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 0666 /dev/kvm
+          else
+            echo '::warning::This runner has no /dev/kvm; the VM runs under slow TCG emulation.'
+          fi
+
+      - name: Install the release with the installer logic and reboot into it
+        shell: bash
+        run: bash tests/vm-install-reboot.sh release "$KERNEL_RELEASE"
+
+      - name: Preserve VM console log
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: vm-console-latest-release
+          path: vm-console.log
+          if-no-files-found: ignore
