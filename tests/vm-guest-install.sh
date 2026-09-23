@@ -42,8 +42,12 @@ fail() {
   systemctl poweroff --force
   exit 1
 }
+on_exit() {
+  local status=$?
+  (( status == 0 )) || fail "the installation script exited with status $status"
+}
 trap 'fail "line $LINENO failed: $BASH_COMMAND"' ERR
-trap 'status=$?; (( status == 0 )) || fail "the installation script exited with status $status"' EXIT
+trap on_exit EXIT
 
 phase() {
   console "VM_PHASE: $(date -u +%H:%M:%S) $*"
