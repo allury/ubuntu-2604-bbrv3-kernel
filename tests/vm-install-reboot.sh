@@ -51,8 +51,13 @@ install -m 0644 "$repo_root/installer/install.sh" "$work_dir/http/install.sh"
 install -m 0644 "$repo_root/tests/vm-guest-install.sh" "$work_dir/http/vm-guest-install.sh"
 printf 'instance-id: bbrv3-acceptance\nlocal-hostname: bbrv3-acceptance\n' > "$work_dir/http/meta-data"
 : > "$work_dir/http/vendor-data"
+# bootcmd runs before network-online.target, which the apt-daily jobs wait
+# for, so the first-boot updates are cancelled before they start and cannot
+# hold the dpkg lock during the installation.
 cat > "$work_dir/http/user-data" <<EOF
 #cloud-config
+bootcmd:
+  - [systemctl, --no-block, stop, apt-daily.timer, apt-daily-upgrade.timer, apt-daily.service, apt-daily-upgrade.service]
 runcmd:
   - [bash, -c, "curl -fsS $guest_base_url/vm-guest-install.sh -o /root/vm-guest-install.sh && bash /root/vm-guest-install.sh $guest_base_url $kernel_release > /dev/ttyS0 2>&1"]
 EOF
@@ -65,35 +70,88 @@ for _ in $(seq 50); do
 done
 curl -fs -o /dev/null "http://127.0.0.1:$http_port/meta-data" || die 'The seed HTTP server did not start.'
 
+# The guest prints a VM_* marker at each stage. A stage that prints nothing
+# new for stall_limit is treated as stuck instead of waiting for time_limit.
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
   accel=(-accel kvm -cpu host)
-  time_limit=30m
+  accelerator=KVM
+  time_limit=$(( 45 * 60 ))
+  stall_limit=$(( 15 * 60 ))
 else
   printf '%s\n' 'WARNING: /dev/kvm is not usable; falling back to much slower TCG emulation.' >&2
   accel=(-accel tcg -cpu max)
-  time_limit=100m
+  accelerator=TCG
+  time_limit=$(( 110 * 60 ))
+  stall_limit=$(( 45 * 60 ))
 fi
+marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|ACCEPTANCE_[A-Z]+)'
+
+# GitHub Actions annotations stay readable without signing in, unlike the
+# job log, so the outcome and the end of the console are reported there too.
+annotate() {
+  local message="$3"
+  message="${message//'%'/'%25'}"
+  message="${message//$'\r'/}"
+  message="${message//$'\n'/'%0A'}"
+  printf '::%s title=%s::%s\n' "$1" "$2" "$message"
+}
 
 # The guest reboots once into the new kernel and powers off after reporting.
-set +e
-timeout "$time_limit" qemu-system-x86_64 \
+: > "$console_log"
+qemu-system-x86_64 \
   "${accel[@]}" \
   -machine q35 \
   -smp 4 \
   -m 4096 \
   -display none \
   -monitor none \
-  -serial stdio \
+  -serial "file:$console_log" \
   -drive "file=$work_dir/disk.qcow2,if=virtio,format=qcow2" \
-  -nic user,model=virtio-net-pci \
-  -smbios "type=1,serial=ds=nocloud;s=$guest_base_url/" \
-  2>&1 | tee "$console_log"
-qemu_status="${PIPESTATUS[0]}"
-set -e
+  -nic user,model=virtio-net-pci,ipv6=off \
+  -smbios "type=1,serial=ds=nocloud;s=$guest_base_url/" &
+qemu_pid=$!
+tail -n +1 -F --pid="$qemu_pid" "$console_log" &
+tail_pid=$!
+vm_started=$SECONDS
+markers_seen=0
+last_progress=$SECONDS
+stopped_reason=''
+while kill -0 "$qemu_pid" 2>/dev/null; do
+  markers="$(grep -acE "$marker_pattern" "$console_log" || true)"
+  if (( markers != markers_seen )); then
+    markers_seen=$markers
+    last_progress=$SECONDS
+  fi
+  if (( SECONDS - vm_started > time_limit )); then
+    stopped_reason="the VM did not finish within $(( time_limit / 60 )) minutes"
+  elif (( SECONDS - last_progress > stall_limit )); then
+    stopped_reason="the guest printed no new progress marker for $(( stall_limit / 60 )) minutes"
+  fi
+  if [[ -n "$stopped_reason" ]]; then
+    kill "$qemu_pid" 2>/dev/null || true
+    break
+  fi
+  sleep 5
+done
+qemu_status=0
+wait "$qemu_pid" || qemu_status=$?
+wait "$tail_pid" || true
 
-grep -Fq 'VM_INSTALL_START' "$console_log" ||
-  die 'The guest never started the installation; check the cloud-init seed and network in the console log.'
-grep -F 'VM_ACCEPTANCE_' "$console_log" || true
-grep -Fq "VM_ACCEPTANCE_PASS: booted $kernel_release," "$console_log" ||
-  die "The VM did not reboot into $kernel_release and pass the installer's verification (QEMU exit status $qemu_status)."
-[[ "$qemu_status" -eq 0 ]] || die "QEMU exited with status $qemu_status."
+progress="$(grep -aoE "$marker_pattern[^[:cntrl:]]*" "$console_log" || true)"
+summary="Accelerator $accelerator, VM ran $(( (SECONDS - vm_started) / 60 )) min, QEMU exit status $qemu_status.
+Progress markers:
+${progress:-none}"
+if [[ -z "$stopped_reason" && "$qemu_status" -eq 0 ]] &&
+  grep -aFq "VM_ACCEPTANCE_PASS: booted $kernel_release," "$console_log"; then
+  annotate notice 'VM acceptance passed' "$summary"
+  exit 0
+fi
+failure="${stopped_reason:-the VM stopped without passing the installer verification}"
+console_tail="$(sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$console_log" | LC_ALL=C tr -cd '\11\12\40-\176' |
+  grep -v '^[[:space:]]*$' | tail -n 25 | cut -c1-160 || true)"
+annotate error 'VM acceptance failed' "$failure.
+$summary
+
+Last console lines:
+$console_tail"
+die "$failure."

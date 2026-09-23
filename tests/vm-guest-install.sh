@@ -4,7 +4,7 @@
 # independent installer's embedded installation logic and lets the installer
 # reboot. On the next boot a oneshot unit reports the result of the
 # installer's own verification service to the serial console and powers off.
-set -euo pipefail
+set -Eeuo pipefail
 
 usage='Usage: vm-guest-install.sh <base-url> <kernel-release>'
 base_url="${1:?$usage}"
@@ -12,25 +12,65 @@ kernel_release="${2:?$usage}"
 release_dir=/var/tmp/bbrv3-release
 started=/var/lib/bbrv3-acceptance/started
 
+# Any failure reports itself and powers the VM off at once, so the host does
+# not wait for its time limit. The forced poweroff also skips services such
+# as unattended-upgrades that can hold a normal shutdown for 30 minutes.
 fail() {
+  trap - ERR EXIT
   printf 'VM_ACCEPTANCE_FAIL: %s\n' "$*"
-  systemctl poweroff
+  echo '--- network state ---'
+  ip -brief address || true
+  ip route || true
+  resolvectl dns || true
+  sleep 2
+  systemctl poweroff --force
   exit 1
 }
-trap 'fail "installation step failed at line $LINENO"' ERR
+trap 'fail "line $LINENO failed: $BASH_COMMAND"' ERR
+trap 'status=$?; (( status == 0 )) || fail "the installation script exited with status $status"' EXIT
+
+phase() {
+  printf 'VM_PHASE: %s %s\n' "$(date -u +%H:%M:%S)" "$*"
+}
 
 # cloud-init runs this once per instance; never install twice.
 [[ ! -e "$started" ]] || exit 0
 mkdir -p "$(dirname -- "$started")"
 touch "$started"
-printf 'VM_INSTALL_START: %s\n' "$kernel_release"
+printf 'VM_INSTALL_START: %s at %s\n' "$kernel_release" "$(date -u +%H:%M:%S)"
 
-# A fresh image starts background apt jobs; they must not hold the dpkg lock
-# while the installer runs.
-systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service \
-  apt-daily-upgrade.service unattended-upgrades.service || true
-printf 'DPkg::Lock::Timeout "600";\n' > /etc/apt/apt.conf.d/99bbrv3-acceptance
+# cloud-init's bootcmd cancels the first-boot apt-daily jobs. Should one run
+# anyway, wait for it instead of interrupting it, and never stop
+# unattended-upgrades.service: its stop waits for a running upgrade for up
+# to 30 minutes.
+for unit in apt-daily.service apt-daily-upgrade.service; do
+  while :; do
+    case "$(systemctl show -p ActiveState --value "$unit")" in
+      activating|active|deactivating|reloading) sleep 5 ;;
+      *) break ;;
+    esac
+  done
+done
+phase 'no background apt job is running'
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+
+# The installer resolves package dependencies from the Ubuntu archive. Bound
+# every apt request, and fail early with the network state when the archive
+# does not answer, instead of hanging at "Waiting for headers".
+cat > /etc/apt/apt.conf.d/99bbrv3-acceptance <<'APT'
+DPkg::Lock::Timeout "600";
+Acquire::Retries "3";
+Acquire::http::Timeout "30";
+APT
+codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"
+mapfile -t archive_uris < <(awk '/^URIs:/ { for (i = 2; i <= NF; i++) print $i }' \
+  /etc/apt/sources.list.d/ubuntu.sources | sort -u)
+(( ${#archive_uris[@]} > 0 )) || fail 'no Ubuntu archive is configured in ubuntu.sources'
+for uri in "${archive_uris[@]}"; do
+  curl -fsS -o /dev/null --max-time 60 "${uri%/}/dists/$codename/Release" ||
+    fail "the Ubuntu archive $uri did not answer within 60 seconds"
+done
+phase "Ubuntu archive reachable: ${archive_uris[*]}"
 
 # Ubuntu cloud images first try to boot without an initramfs
 # (GRUB_FORCE_PARTUUID). Turn that off so the new kernel boots the way most
@@ -50,6 +90,7 @@ done < SHA256SUMS
 sha256sum --check --strict --quiet SHA256SUMS
 compgen -G "linux-image-unsigned-${kernel_release}_*.deb" > /dev/null ||
   fail "the release does not contain linux-image-unsigned-$kernel_release"
+phase 'release downloaded and verified'
 
 # Run exactly the installation logic that installer/install.sh embeds, the way
 # it runs it after downloading and verifying a release.
@@ -108,6 +149,7 @@ WantedBy=multi-user.target
 UNIT
 systemctl enable bbrv3-acceptance-report.service
 
-apt-get -o Acquire::Retries=3 update
-echo 'VM_INSTALL_READY'
+apt-get update
+printf 'VM_INSTALL_READY: %s\n' "$(date -u +%H:%M:%S)"
 bash .installer-runtime/install-bbrv3.sh install --reboot
+phase 'installer finished; rebooting into the new kernel'
