@@ -157,7 +157,7 @@ if [[ -z "$stopped_reason" && "$qemu_status" -eq 0 ]] &&
   exit 0
 fi
 failure="${stopped_reason:-the VM stopped without passing the installer verification}"
-console_tail="$(sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$console_log" | LC_ALL=C tr -cd '\11\12\40-\176' |
+console_tail="$(LC_ALL=C sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[^[:print:]\t]//g' "$console_log" |
   grep -v '^[[:space:]]*$' | tail -n 25 | cut -c1-160 || true)"
 annotate error 'VM acceptance failed' "$failure.
 $summary

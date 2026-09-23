@@ -47,7 +47,11 @@ jobs:
           set -euo pipefail
           mapfile -d '' -t scripts < <(git ls-files -z -- '*.sh')
           shellcheck --version
-          shellcheck "${scripts[@]}"
+          # Each finding also becomes an annotation, readable without signing in.
+          status=0
+          shellcheck --format=gcc "${scripts[@]}" > shellcheck.txt || status=$?
+          sed -E 's/^([^:]+):([0-9]+):([0-9]+): [a-z]+: (.*)$/::error file=\1,line=\2,col=\3::\4/' shellcheck.txt
+          exit "$status"
 
       - name: Parse every workflow file
         if: ${{ !cancelled() }}
