@@ -62,7 +62,7 @@ DPkg::Lock::Timeout "600";
 Acquire::Retries "3";
 Acquire::http::Timeout "30";
 APT
-codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"
+codename="$(awk -F= '$1 == "VERSION_CODENAME" { print $2 }' /etc/os-release)"
 mapfile -t archive_uris < <(awk '/^URIs:/ { for (i = 2; i <= NF; i++) print $i }' \
   /etc/apt/sources.list.d/ubuntu.sources | sort -u)
 (( ${#archive_uris[@]} > 0 )) || fail 'no Ubuntu archive is configured in ubuntu.sources'

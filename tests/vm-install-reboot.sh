@@ -84,7 +84,9 @@ else
   time_limit=$(( 110 * 60 ))
   stall_limit=$(( 45 * 60 ))
 fi
-marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|ACCEPTANCE_[A-Z]+)'
+# The kernel's own boot and reboot lines also count, so a stall can be told
+# apart: installing, restarting, or booting the new kernel.
+marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|ACCEPTANCE_[A-Z]+)|Linux version [0-9][^ ]*|reboot: [A-Z][a-z]+( [a-z]+)*'
 
 # GitHub Actions annotations stay readable without signing in, unlike the
 # job log, so the outcome and the end of the console are reported there too.
@@ -93,7 +95,9 @@ annotate() {
   message="${message//'%'/'%25'}"
   message="${message//$'\r'/}"
   message="${message//$'\n'/'%0A'}"
-  printf '::%s title=%s::%s\n' "$1" "$2" "$message"
+  # The console often ends without a newline, and a workflow command is only
+  # recognised at the start of a line.
+  printf '\n::%s title=%s::%s\n' "$1" "$2" "$message"
 }
 
 # The guest reboots once into the new kernel and powers off after reporting.
@@ -137,7 +141,7 @@ qemu_status=0
 wait "$qemu_pid" || qemu_status=$?
 wait "$tail_pid" || true
 
-progress="$(grep -aoE "$marker_pattern[^[:cntrl:]]*" "$console_log" || true)"
+progress="$(grep -aoE "($marker_pattern)[^[:cntrl:]]*" "$console_log" | cut -c1-120 || true)"
 summary="Accelerator $accelerator, VM ran $(( (SECONDS - vm_started) / 60 )) min, QEMU exit status $qemu_status.
 Progress markers:
 ${progress:-none}"
