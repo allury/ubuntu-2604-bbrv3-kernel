@@ -1,0 +1,189 @@
+name: Repository checks
+
+# Checks for changes to the build scripts, tests, patches and workflows that
+# do not need a kernel build. They use only tools preinstalled on the runner
+# and the Ubuntu packages the release workflow already installs.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/**
+      - tests/**
+      - patches/**
+      - config/**
+      - .github/workflows/**
+  pull_request:
+    paths:
+      - scripts/**
+      - tests/**
+      - patches/**
+      - config/**
+      - .github/workflows/**
+
+permissions: {}
+
+concurrency:
+  group: repo-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UBUNTU_KERNEL_REPOSITORY: https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/resolute
+
+jobs:
+  static:
+    name: Lint shell and workflows, run script tests
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: ShellCheck every shell script
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t scripts < <(git ls-files -z -- '*.sh')
+          shellcheck --version
+          shellcheck "${scripts[@]}"
+
+      - name: Parse every workflow file
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -ryaml -e 'ARGV.each { |path| YAML.safe_load(File.read(path), aliases: false) }' .github/workflows/*.yml
+
+      - name: Check approved patch hashes
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: patches
+        run: sha256sum --check --strict APPROVED-SHA256SUMS
+
+      - name: Script behavior tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/test-apply-bbrv3.sh
+          bash tests/test-report-patch-drift.sh
+          bash tests/test-resolve-source.sh
+          bash tests/test-resolve-zfs-source.sh
+
+  patch-check:
+    name: Apply the approved patch to the released Ubuntu source
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ubuntu:26.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Bootstrap the Ubuntu 26.04 container
+        shell: bash
+        run: |
+          set -euo pipefail
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          test -f "$sources"
+          sed -i -E 's/(^Suites:.*) resolute-backports/\1/' "$sources"
+          ! grep -Eq '^Suites:.*(^|[[:space:]])resolute-(backports|proposed)([[:space:]]|$)' "$sources"
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - id: resolve
+        name: Resolve the released Ubuntu source
+        shell: bash
+        run: ./scripts/resolve-source.sh auto
+
+      - name: Fetch the exact Ubuntu kernel source tag
+        env:
+          SOURCE_TAG: ${{ steps.resolve.outputs.source_tag }}
+        shell: bash
+        run: git clone --depth=1 --branch "$SOURCE_TAG" "$UBUNTU_KERNEL_REPOSITORY" kernel
+
+      - name: Apply the approved BBRv3 patch
+        env:
+          SOURCE_VERSION: ${{ steps.resolve.outputs.source_version }}
+        shell: bash
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+          "$GITHUB_WORKSPACE/scripts/apply-bbrv3.sh" "$SOURCE_VERSION"
+
+      - name: Report Ubuntu changes under the patch since its review baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/report-patch-drift.sh kernel "patches/$BBRV3_PATCH_FILE" PATCH-BASELINE-DRIFT.txt
+          {
+            printf '### 补丁涉及文件相对审核基线的变化\n\n```text\n'
+            sed '/^$/q' PATCH-BASELINE-DRIFT.txt
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve the drift report
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: patch-baseline-drift
+          path: PATCH-BASELINE-DRIFT.txt
+          if-no-files-found: error
+
+  boot-smoke:
+    name: Boot the latest stable release with the current QEMU checks
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download the latest stable kernel packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          tag="$(jq -r .tag_name <<<"$release_json")"
+          [[ "$tag" =~ ^ubuntu-26\.04-bbrv3-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)*-p[1-9][0-9]*$ ]]
+          [[ "$(jq -r .prerelease <<<"$release_json")" == false ]]
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir release \
+            --pattern 'linux-image-unsigned-*.deb' \
+            --pattern 'linux-modules-*.deb' \
+            --pattern 'linux-main-modules-zfs-*.deb' \
+            --pattern SHA256SUMS
+          (cd release && sha256sum --check --strict --ignore-missing SHA256SUMS)
+          image_package="$(dpkg-deb -f release/linux-image-unsigned-*.deb Package)"
+          kernel_release="${image_package#linux-image-unsigned-}"
+          printf 'KERNEL_RELEASE=%s\n' "$kernel_release" >> "$GITHUB_ENV"
+          printf '使用已发布的 %s（%s）验证当前 QEMU 检查。\n' "$tag" "$kernel_release" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install QEMU and a static toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static cpio gcc kmod libc6-dev qemu-system-x86 zstd
+
+      - name: Boot the released kernel and exercise BBRv3 and OpenZFS
+        shell: bash
+        run: bash tests/qemu-boot-smoke.sh release "$KERNEL_RELEASE"
+
+      - name: Preserve QEMU console log
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: qemu-console-latest-release
+          path: qemu-console.log
+          if-no-files-found: ignore

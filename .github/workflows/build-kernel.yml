@@ -85,21 +85,25 @@ jobs:
         name: Skip an already-published release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
-          api="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/${{ steps.resolve.outputs.release_tag }}"
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
           http_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "$api")"
+          # A green scheduled run usually only means nothing new was released.
           case "$http_status" in
             200)
               echo 'build_needed=false' >> "$GITHUB_OUTPUT"
               echo 'An immutable release for this source and patch revision already exists.'
+              printf '%s 已发布，本次运行没有构建内核；运行显示成功只说明版本检查通过。\n' "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
               ;;
             404)
               echo 'build_needed=true' >> "$GITHUB_OUTPUT"
+              printf '%s 尚未发布，需要构建；是否构建并发布以后续任务的结果为准。\n' "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
               ;;
             *)
               printf 'ERROR: GitHub release lookup returned HTTP %s.\n' "$http_status" >&2
@@ -235,7 +239,14 @@ jobs:
         run: |
           set -euo pipefail
           echo 'PATCH_PORT_REQUIRED=false' >> "$GITHUB_ENV"
-          if ! "$GITHUB_WORKSPACE/scripts/apply-bbrv3.sh" "$SOURCE_VERSION"; then
+          status=0
+          "$GITHUB_WORKSPACE/scripts/apply-bbrv3.sh" "$SOURCE_VERSION" || status=$?
+          # Status 3 rejects the patch file itself (unapproved bytes or CRLF);
+          # that is fixed in this repository, not by porting the patch.
+          if (( status == 3 )); then
+            echo '::error::The selected BBRv3 patch file was rejected; see patches/APPROVED-SHA256SUMS.'
+            exit 1
+          elif (( status != 0 )); then
             echo 'PATCH_PORT_REQUIRED=true' >> "$GITHUB_ENV"
             exit 1
           fi
@@ -267,6 +278,18 @@ jobs:
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "$api" \
             --data "$payload"
+
+      - name: Report Ubuntu changes under the patch since its review baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          ./scripts/report-patch-drift.sh kernel "patches/$BBRV3_PATCH_FILE" release/PATCH-BASELINE-DRIFT.txt
+          {
+            printf '### 补丁涉及文件相对审核基线的变化\n\n```text\n'
+            sed '/^$/q' release/PATCH-BASELINE-DRIFT.txt
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Give the package a non-conflicting custom ABI
         shell: bash
@@ -365,12 +388,15 @@ jobs:
             printf '%s\n' "Source commit: $(git -C kernel rev-parse HEAD)"
             printf '%s\n' "BBRv3 patch: $BBRV3_PATCH_FILE"
             printf '%s\n' "BBRv3 patch SHA256: $BBRV3_PATCH_SHA256"
+            printf '%s\n' 'BBRv3 patch approval: SHA-256 matches patches/APPROVED-SHA256SUMS'
+            sed -n -E 's/^(Review baseline|Changed since baseline|Lines added|Lines removed): /Patch drift - \1: /p' \
+              release/PATCH-BASELINE-DRIFT.txt
             printf '%s\n' "Ubuntu source repository: $UBUNTU_KERNEL_REPOSITORY"
             printf '%s\n' "External ZFS modules: included as linux-main-modules-zfs-$KERNEL_RELEASE"
             printf '%s\n' 'Ubuntu packaging mode: core kernel built with do_mainline_build=true; OpenZFS then built separately from the released Ubuntu zfs-dkms source'
             cat release/ZFS-BUILD-METADATA.txt
           } > release/BUILD-METADATA.txt
-          (cd release && sha256sum -- *.deb *.sh *.conf *.patch config-* BUILD-METADATA.txt ZFS-BUILD-METADATA.txt PACKAGE-MANIFEST.tsv > SHA256SUMS)
+          (cd release && sha256sum -- *.deb *.sh *.conf *.patch config-* BUILD-METADATA.txt ZFS-BUILD-METADATA.txt PACKAGE-MANIFEST.tsv PATCH-BASELINE-DRIFT.txt > SHA256SUMS)
           ls -lh release
 
       - name: Upload packages as a workflow artifact
@@ -475,85 +501,17 @@ jobs:
           name: ubuntu-26.04-bbrv3-${{ needs.plan.outputs.source_version }}-amd64
           path: release
 
-      - name: Prepare QEMU and a minimal initramfs
+      - name: Install QEMU and a static toolchain
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             busybox-static cpio gcc kmod libc6-dev qemu-system-x86 zstd
-          mkdir -p qemu/image qemu/modules qemu/root/{bin,dev,proc,sys,modules}
-          dpkg-deb -x release/linux-image-unsigned-*.deb qemu/image
-          dpkg-deb -x release/linux-modules-*.deb qemu/modules
-          dpkg-deb -x release/linux-main-modules-zfs-*.deb qemu/modules
-          kernel_image="$(find qemu/image/boot -type f -name "vmlinuz-$KERNEL_RELEASE" -print -quit)"
-          test -s "$kernel_image"
-          printf '%s\n' "$kernel_image" > qemu/kernel-image-path
 
-          extract_module() {
-            local module_name="$1"
-            local module_path
-            local dependencies
-            module_path="$(find "qemu/modules/usr/lib/modules/$KERNEL_RELEASE" -type f -name "$module_name.ko*" -print -quit)"
-            test -n "$module_path"
-            dependencies="$(modinfo -F depends "$module_path")"
-            test -z "$dependencies"
-            case "$module_path" in
-              *.zst) zstd --quiet --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
-              *.xz) xz --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
-              *.ko) cp "$module_path" "qemu/root/modules/$module_name.ko" ;;
-              *) return 1 ;;
-            esac
-          }
-          extract_module sch_fq
-          extract_module tcp_bbr
-          for module_name in spl zfs; do
-            module_path="$(find "qemu/modules/usr/lib/modules/$KERNEL_RELEASE" -type f -name "$module_name.ko*" -print -quit)"
-            test -n "$module_path"
-            case "$module_path" in
-              *.zst) zstd --quiet --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
-              *.xz) xz --decompress --stdout "$module_path" > "qemu/root/modules/$module_name.ko" ;;
-              *.ko) cp "$module_path" "qemu/root/modules/$module_name.ko" ;;
-              *) exit 1 ;;
-            esac
-          done
-          test -z "$(modinfo -F depends qemu/root/modules/spl.ko)"
-          test "$(modinfo -F depends qemu/root/modules/zfs.ko)" = spl
-          modinfo -F version qemu/root/modules/zfs.ko > qemu/root/zfs-expected-version
-          test -s qemu/root/zfs-expected-version
-          install -m 0755 /bin/busybox qemu/root/bin/busybox
-          install -m 0755 tests/qemu-init.sh qemu/root/init
-          gcc -static -O2 -Wall -Wextra -Werror \
-            tests/qemu-bbr-smoke.c -o qemu/root/bbrv3-socket-smoke
-          sudo mknod qemu/root/dev/console c 5 1
-          sudo mknod qemu/root/dev/null c 1 3
-          (cd qemu/root && find . -print0 | cpio --null --create --format=newc 2>/dev/null | gzip -9 > ../initramfs.cpio.gz)
-
-      - name: Boot the exact kernel and test a BBR socket
+      - name: Boot the exact kernel and exercise BBRv3 and OpenZFS
         shell: bash
-        run: |
-          set -euo pipefail
-          kernel_image="$(cat qemu/kernel-image-path)"
-          set +e
-          timeout 180s qemu-system-x86_64 \
-            -machine q35,accel=tcg \
-            -cpu max \
-            -smp 2 \
-            -m 768M \
-            -display none \
-            -monitor none \
-            -serial stdio \
-            -no-reboot \
-            -kernel "$kernel_image" \
-            -initrd qemu/initramfs.cpio.gz \
-            -append 'rdinit=/init console=ttyS0,115200 panic=-1' \
-            2>&1 | tee qemu-console.log
-          qemu_status="${PIPESTATUS[0]}"
-          set -e
-          grep -F 'BBRV3_SOCKET_PASS' qemu-console.log
-          grep -F "BBRV3_QEMU_PASS: $KERNEL_RELEASE, module version 3" qemu-console.log
-          grep -F 'ZFS_QEMU_PASS: module version ' qemu-console.log
-          test "$qemu_status" -eq 0
+        run: bash tests/qemu-boot-smoke.sh release "$KERNEL_RELEASE"
 
       - name: Preserve QEMU console log
         if: always()
@@ -602,8 +560,10 @@ jobs:
             release/config-*
             release/*.patch
             release/ZFS-BUILD-METADATA.txt
+            release/PATCH-BASELINE-DRIFT.txt
           )
           gh release create "$RELEASE_TAG" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Ubuntu 26.04 BBRv3 - $SOURCE_VERSION" \
             --notes-file release/RELEASE-NOTES.md
+          printf '已发布 %s。\n' "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"

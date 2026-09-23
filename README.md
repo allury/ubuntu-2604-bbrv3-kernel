@@ -49,13 +49,13 @@ sudo bash /var/lib/bbrv3-installer/install-bbrv3.sh test
 
 ## 自动编译与发布
 
-每天 02:23 UTC（北京时间 10:23）检查 Ubuntu 官方已发布的内核候选版本；同源版本和补丁修订已发布时跳过。新版本依次执行：
+每天定时检查 Ubuntu 官方已发布的内核候选版本（计划时间 02:23 UTC，即北京时间 10:23；GitHub 定时任务常延迟数小时）。同源版本和补丁修订已发布时跳过，运行摘要会注明本次没有构建。新版本依次执行：
 
-1. 解析 Ubuntu 发布源并校验 BBRv3 补丁能否精确应用。
+1. 解析 Ubuntu 发布源，核对 BBRv3 补丁的 SHA-256 与维护者批准值，校验补丁能否精确应用，并记录补丁涉及文件相对审核基线的变化。
 2. 预编译 OpenZFS，随后完整构建 Ubuntu generic 内核包和匹配 ZFS 包。
 3. 验证包名、版本、架构、依赖、模块签名及校验和。
 4. 在干净 Ubuntu 26.04 容器中真实安装包，并编译外部测试模块。
-5. 在 QEMU 中启动产物，验证 BBRv3、OpenZFS 加载和 TCP 传输。
+5. 在 QEMU 中启动产物，验证 BBRv3、OpenZFS 加载和 32 MiB TCP 传输，确认连接上报 BBR 版本 3，且传输期间内核没有报告警告。
 6. 全部通过才创建正式 Release，不覆盖已有同名版本。
 
 补丁不兼容时停止发布并创建移植问题，不保证未来所有内核均无需人工适配。服务器不会自动安装或重启；新正式版本发布后，主动执行上述安装命令即可更新。
@@ -71,7 +71,7 @@ v1.1.0 增加磁盘空间预算、安装锁和镜像/initramfs/GRUB 引用检查
 ## 源码与信任边界
 
 - 内核：[Ubuntu 内核团队 resolute 仓库](https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/resolute)，精确发布标签；解析已签名的正式 APT 元数据，排除 proposed、backports 和 PPA。
-- BBRv3：[Google BBR](https://github.com/google/bbr/tree/v3)；当前 Linux 7.0 移植补丁来自第三方 [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3)，不是 Google 官方 Ubuntu 补丁。补丁存放在本仓库，记录来源提交和 SHA-256，并执行精确应用检查；当前尚未实现批准哈希白名单比对，详见 [补丁策略](patches/README.md)。
+- BBRv3：[Google BBR](https://github.com/google/bbr/tree/v3)；当前 Linux 7.0 移植补丁来自第三方 [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3)，不是 Google 官方 Ubuntu 补丁。补丁存放在本仓库并记录来源提交；构建前核对其 SHA-256 与维护者批准值，执行精确应用检查，并在 Release 附件 `PATCH-BASELINE-DRIFT.txt` 中列出补丁涉及文件相对审核基线的 Ubuntu 改动，详见 [补丁策略](patches/README.md)。
 - OpenZFS：Ubuntu 官方 `zfs-dkms` 源码，针对自定义 ABI 编译并使用该内核构建密钥签名。
 - 构建与恢复：[构建恢复说明](docs/BUILD-RECOVERY.md)；[补丁策略](patches/README.md)。
 

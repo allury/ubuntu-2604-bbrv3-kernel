@@ -5,6 +5,7 @@ release_dir="${1:?Usage: verify-artifacts.sh <release-dir> <kernel-release> <pac
 kernel_release="${2:?Usage: verify-artifacts.sh <release-dir> <kernel-release> <package-version> <source-version>}"
 package_version="${3:?Usage: verify-artifacts.sh <release-dir> <kernel-release> <package-version> <source-version>}"
 source_version="${4:?Usage: verify-artifacts.sh <release-dir> <kernel-release> <package-version> <source-version>}"
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -140,6 +141,40 @@ done
 [[ -n "$(modinfo -F version "$(find "$unpack_dir/usr/lib/modules/$kernel_release" -type f -name 'zfs.ko*' -print -quit)" || true)" ]] ||
   die 'The packaged OpenZFS module does not declare a version.'
 
+# The release notes state that the shipped patch is the approved one, so check
+# the file that is actually shipped rather than trusting an earlier step.
+mapfile -t release_patches < <(find "$release_dir" -maxdepth 1 -type f -name '*.patch' -printf '%f\n')
+(( ${#release_patches[@]} == 1 )) ||
+  die "Expected exactly one BBRv3 patch in the release, found ${#release_patches[@]}."
+patch_name="${release_patches[0]}"
+patch_sha256="$(sha256sum "$release_dir/$patch_name" | awk '{print $1}')"
+mapfile -t approved_sha256 < <(
+  awk -v target="$patch_name" '{ name = $2; sub(/^\*/, "", name) } name == target { print $1 }' \
+    "$repo_root/patches/APPROVED-SHA256SUMS"
+)
+(( ${#approved_sha256[@]} == 1 )) ||
+  die "$patch_name needs exactly one entry in patches/APPROVED-SHA256SUMS; found ${#approved_sha256[@]}."
+[[ "${approved_sha256[0]}" == "$patch_sha256" ]] ||
+  die "$patch_name does not match its approved SHA-256 in patches/APPROVED-SHA256SUMS."
+
+drift_report="$release_dir/PATCH-BASELINE-DRIFT.txt"
+[[ -s "$drift_report" ]] || die "Missing patch baseline drift report: $drift_report"
+drift_field() {
+  awk -v key="$1: " 'index($0, key) == 1 { print substr($0, length(key) + 1); exit }' "$drift_report"
+}
+[[ "$(drift_field Patch)" == "$patch_name" ]] || die "The drift report does not describe $patch_name."
+[[ "$(drift_field 'Built source')" == "Ubuntu-$source_version" ]] ||
+  die "The drift report does not describe Ubuntu-$source_version."
+drift_baseline="$(drift_field 'Review baseline')"
+[[ "$drift_baseline" =~ ^Ubuntu-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)*$ ]] ||
+  die "Unexpected review baseline in the drift report: ${drift_baseline:-missing}"
+drift_changed="$(drift_field 'Changed since baseline')"
+drift_added="$(drift_field 'Lines added')"
+drift_removed="$(drift_field 'Lines removed')"
+for drift_count in "$drift_changed" "$drift_added" "$drift_removed"; do
+  [[ "$drift_count" =~ ^[0-9]+$ ]] || die "Malformed count in the drift report: ${drift_count:-missing}"
+done
+
 mv "$manifest_tmp" "$release_dir/PACKAGE-MANIFEST.tsv"
 (
   cd "$release_dir"
@@ -152,7 +187,13 @@ mv "$manifest_tmp" "$release_dir/PACKAGE-MANIFEST.tsv"
   printf '%s\n' "- 自定义内核版本：$kernel_release"
   printf '%s\n' "- 软件包版本：$package_version"
   printf '%s\n' '- 启动后的拥塞控制名称：bbr（不是 bbr3）'
-  printf '%s\n\n' '- 已从软件包验证 BBR 模块版本：3'
+  printf '%s\n' '- 已从软件包验证 BBR 模块版本：3'
+  printf '%s\n' "- BBRv3 补丁：$patch_name，SHA-256 与仓库中维护者批准的值一致（patches/APPROVED-SHA256SUMS）"
+  if (( drift_changed == 0 )); then
+    printf '%s\n\n' "- 补丁涉及的文件相对审核基线 $drift_baseline 没有变化"
+  else
+    printf '%s\n\n' "- 补丁涉及的文件相对审核基线 $drift_baseline 有 $drift_changed 个发生变化（+$drift_added/-$drift_removed 行），详见附件 PATCH-BASELINE-DRIFT.txt；补丁能精确应用不代表这些变化已经过人工审核"
+  fi
   printf '%s\n\n' '本发布仅在完整构建、干净环境安装检查及 QEMU 启动冒烟测试通过后生成；这些检查不代表所有硬件和网络场景均已验证。'
   printf '%s\n' '自定义内核可与 Canonical 官方内核共存，请保留官方内核作为回退。'
   printf '%s\n' "包含配套的 $required_zfs 软件包，已验证本地签名的 spl/zfs 模块及其 vermagic 与目标内核匹配。"

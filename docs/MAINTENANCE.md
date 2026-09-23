@@ -6,6 +6,7 @@
 | --- | --- |
 | `.github/workflows/build-kernel.yml` | 官方源解析、完整内核构建、安装与启动验收、发布 |
 | `.github/workflows/installer-check.yml` | 独立安装器检查，不编译内核 |
+| `.github/workflows/repo-checks.yml` | 修改脚本、测试、补丁或工作流时运行，不编译内核：ShellCheck、工作流解析、补丁批准哈希、脚本行为测试、对当前 Ubuntu 发布源的补丁应用与变化报告，以及用最新正式内核执行 QEMU 冒烟 |
 | `installer/install.sh` | 用户安装入口，按独立版本标签发布 |
 | `scripts/` | 构建、校验、恢复工具及内核 Release 随附的基线安装脚本 |
 | `config/` | 内核附件的基线配置；独立安装器内嵌自己的配置 |
@@ -38,6 +39,8 @@
 ## 内核更新
 
 定时任务只负责检查、编译、验收和发布；不会修改服务器。补丁无法精确应用时需要人工适配，不以绕过测试来完成发布。
+
+补丁只有在维护者审核后，才能在同一提交中把 SHA-256 写入 `patches/APPROVED-SHA256SUMS`；构建拒绝未列入清单的补丁。每个 Release 附带的 `PATCH-BASELINE-DRIFT.txt` 列出补丁涉及文件相对审核基线的 Ubuntu 改动，有变化时应审阅，详见 [补丁策略](../patches/README.md)。
 
 恢复流程见 [构建恢复](BUILD-RECOVERY.md)，补丁维护见 [补丁策略](../patches/README.md)。检查点必须尚未过期，且源码、补丁和核心打包输入保持一致。
 

@@ -1,4 +1,5 @@
 #!/bin/busybox sh
+# shellcheck shell=dash
 
 fail()
 {
@@ -28,7 +29,20 @@ echo fq > /proc/sys/net/core/default_qdisc || fail 'cannot select fq'
 echo bbr > /proc/sys/net/ipv4/tcp_congestion_control || fail 'cannot select bbr'
 [ "$(/bin/busybox cat /proc/sys/net/core/default_qdisc)" = fq ] || fail 'fq was not retained'
 [ "$(/bin/busybox cat /proc/sys/net/ipv4/tcp_congestion_control)" = bbr ] || fail 'bbr was not retained'
+
+# Start the transfer with an empty kernel log, so that anything the kernel
+# reports while BBRv3 carries traffic is told apart from boot messages.
+/bin/busybox dmesg -c > /boot-dmesg.log || fail 'cannot read the kernel log'
+taint_before="$(/bin/busybox cat /proc/sys/kernel/tainted)"
 /bbrv3-socket-smoke || fail 'TCP socket smoke test failed'
+taint_after="$(/bin/busybox cat /proc/sys/kernel/tainted)"
+# Taint flags B (bad page), D (oops), W (warning) and L (soft lockup).
+new_taint=$(( taint_after & ~taint_before & 17056 ))
+[ "$new_taint" -eq 0 ] ||
+	fail "kernel taint changed from $taint_before to $taint_after during the TCP transfer"
+if /bin/busybox dmesg | /bin/busybox grep -Eq 'WARNING:|BUG:|Oops|Call Trace:|UBSAN:|general protection'; then
+	fail 'the kernel reported a problem during the TCP transfer'
+fi
 
 echo "BBRV3_QEMU_PASS: $(/bin/busybox uname -r), module version $module_version"
 echo "ZFS_QEMU_PASS: module version $zfs_version"
