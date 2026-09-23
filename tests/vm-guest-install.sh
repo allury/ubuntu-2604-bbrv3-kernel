@@ -11,17 +11,33 @@ base_url="${1:?$usage}"
 kernel_release="${2:?$usage}"
 release_dir=/var/tmp/bbrv3-release
 started=/var/lib/bbrv3-acceptance/started
+log=/var/log/bbrv3-acceptance.log
 
-# Any failure reports itself and powers the VM off at once, so the host does
-# not wait for its time limit. The forced poweroff also skips services such
-# as unattended-upgrades that can hold a normal shutdown for 30 minutes.
+# Everything this script and the installer print goes to $log. Only markers
+# reach the serial console, each through a fresh open: serial-getty hangs up
+# ttyS0 when it starts, after which a descriptor opened before that fails
+# with EIO. Earlier runs died silently on exactly that write.
+exec >> "$log" 2>&1
+
+console() {
+  printf '%s\n' "$*"
+  printf '%s\n' "$*" > /dev/ttyS0 || true
+}
+
+# Any failure reports itself with the end of the log and powers the VM off at
+# once, so the host does not wait for its time limit. The forced poweroff
+# also skips services such as unattended-upgrades that can hold a normal
+# shutdown for 30 minutes.
 fail() {
   trap - ERR EXIT
-  printf 'VM_ACCEPTANCE_FAIL: %s\n' "$*"
-  echo '--- network state ---'
-  ip -brief address || true
-  ip route || true
-  resolvectl dns || true
+  console "VM_ACCEPTANCE_FAIL: $*"
+  {
+    echo '--- network state ---'
+    ip -brief address
+    ip route
+    resolvectl dns
+  } >> "$log" 2>&1 || true
+  { echo '--- end of the installation log ---'; tail -n 60 "$log"; } > /dev/ttyS0 2>&1 || true
   sleep 2
   systemctl poweroff --force
   exit 1
@@ -30,14 +46,14 @@ trap 'fail "line $LINENO failed: $BASH_COMMAND"' ERR
 trap 'status=$?; (( status == 0 )) || fail "the installation script exited with status $status"' EXIT
 
 phase() {
-  printf 'VM_PHASE: %s %s\n' "$(date -u +%H:%M:%S)" "$*"
+  console "VM_PHASE: $(date -u +%H:%M:%S) $*"
 }
 
 # cloud-init runs this once per instance; never install twice.
 [[ ! -e "$started" ]] || exit 0
 mkdir -p "$(dirname -- "$started")"
 touch "$started"
-printf 'VM_INSTALL_START: %s at %s\n' "$kernel_release" "$(date -u +%H:%M:%S)"
+console "VM_INSTALL_START: $kernel_release at $(date -u +%H:%M:%S)"
 
 # cloud-init's bootcmd cancels the first-boot apt-daily jobs. Should one run
 # anyway, wait for it instead of interrupting it, and never stop
@@ -111,7 +127,7 @@ done
 cat > /usr/local/sbin/bbrv3-acceptance-report <<'REPORT'
 #!/usr/bin/env bash
 set -uo pipefail
-exec > /dev/ttyS0 2>&1
+report=/var/log/bbrv3-acceptance-report.log
 expected="$(cat /var/lib/bbrv3-installer/expected-release 2>/dev/null)"
 booted="$(uname -r)"
 result=PASS
@@ -120,17 +136,23 @@ systemctl is-active --quiet bbrv3-verify.service || result=FAIL
 initramfs=used
 journalctl -k -b --no-pager | grep -Eq 'Trying to unpack rootfs image as initramfs|Freeing initrd memory' ||
   { initramfs=not-used; result=FAIL; }
-echo '--- bbrv3-verify.service ---'
-journalctl -u bbrv3-verify.service -b --no-pager
-echo '--- failed units ---'
-systemctl --failed --no-pager
-echo '--- kernel messages at warning level or above ---'
-journalctl -k -b -p warning --no-pager | tail -n 80
-printf 'Kernel taint: %s\n' "$(cat /proc/sys/kernel/tainted)"
-printf 'VM_ACCEPTANCE_%s: booted %s, expected %s, initramfs %s, congestion control %s, qdisc %s, tcp_bbr version %s\n' \
+{
+  echo '--- bbrv3-verify.service ---'
+  journalctl -u bbrv3-verify.service -b --no-pager
+  echo '--- failed units ---'
+  systemctl --failed --no-pager
+  echo '--- kernel messages at warning level or above ---'
+  journalctl -k -b -p warning --no-pager | tail -n 80
+  printf 'Kernel taint: %s\n' "$(cat /proc/sys/kernel/tainted)"
+} > "$report" 2>&1
+marker="$(printf 'VM_ACCEPTANCE_%s: booted %s, expected %s, initramfs %s, congestion control %s, qdisc %s, tcp_bbr version %s' \
   "$result" "$booted" "${expected:-missing}" "$initramfs" \
   "$(sysctl -n net.ipv4.tcp_congestion_control)" "$(sysctl -n net.core.default_qdisc)" \
-  "$(cat /sys/module/tcp_bbr/version 2>/dev/null || echo missing)"
+  "$(cat /sys/module/tcp_bbr/version 2>/dev/null || echo missing)")"
+# Fresh opens of ttyS0, which serial-getty may have hung up already.
+cat "$report" > /dev/ttyS0
+printf '%s\n' "$marker" > /dev/ttyS0
+sleep 2
 systemctl poweroff
 REPORT
 chmod 0755 /usr/local/sbin/bbrv3-acceptance-report
@@ -150,6 +172,6 @@ UNIT
 systemctl enable bbrv3-acceptance-report.service
 
 apt-get update
-printf 'VM_INSTALL_READY: %s\n' "$(date -u +%H:%M:%S)"
+console "VM_INSTALL_READY: $(date -u +%H:%M:%S)"
 bash .installer-runtime/install-bbrv3.sh install --reboot
 phase 'installer finished; rebooting into the new kernel'

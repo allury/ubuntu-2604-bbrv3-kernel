@@ -59,7 +59,7 @@ cat > "$work_dir/http/user-data" <<EOF
 bootcmd:
   - [systemctl, --no-block, stop, apt-daily.timer, apt-daily-upgrade.timer, apt-daily.service, apt-daily-upgrade.service]
 runcmd:
-  - [bash, -c, "curl -fsS $guest_base_url/vm-guest-install.sh -o /root/vm-guest-install.sh && bash /root/vm-guest-install.sh $guest_base_url $kernel_release > /dev/ttyS0 2>&1"]
+  - [bash, -c, "curl -fsS $guest_base_url/vm-guest-install.sh -o /root/vm-guest-install.sh && bash /root/vm-guest-install.sh $guest_base_url $kernel_release"]
 EOF
 python3 -m http.server "$http_port" --bind 127.0.0.1 --directory "$work_dir/http" > "$work_dir/http.log" 2>&1 &
 http_server=$!
@@ -119,6 +119,7 @@ tail_pid=$!
 vm_started=$SECONDS
 markers_seen=0
 last_progress=$SECONDS
+failure_seen=''
 stopped_reason=''
 while kill -0 "$qemu_pid" 2>/dev/null; do
   markers="$(grep -acE "$marker_pattern" "$console_log" || true)"
@@ -126,10 +127,15 @@ while kill -0 "$qemu_pid" 2>/dev/null; do
     markers_seen=$markers
     last_progress=$SECONDS
   fi
+  if [[ -z "$failure_seen" ]] && grep -aFq 'VM_ACCEPTANCE_FAIL' "$console_log"; then
+    failure_seen=$SECONDS
+  fi
   if (( SECONDS - vm_started > time_limit )); then
     stopped_reason="the VM did not finish within $(( time_limit / 60 )) minutes"
   elif (( SECONDS - last_progress > stall_limit )); then
     stopped_reason="the guest printed no new progress marker for $(( stall_limit / 60 )) minutes"
+  elif [[ -n "$failure_seen" ]] && (( SECONDS - failure_seen > 90 )); then
+    stopped_reason='the guest reported a failure but did not power off'
   fi
   if [[ -n "$stopped_reason" ]]; then
     kill "$qemu_pid" 2>/dev/null || true
