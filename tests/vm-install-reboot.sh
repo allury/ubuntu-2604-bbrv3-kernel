@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Install a BBRv3 release in a full Ubuntu 26.04 cloud-image VM with the
 # independent installer's own installation logic, reboot through GRUB and wait
-# for the installer's boot-time verification service.
+# for the installer's boot-time verification service. The install scenario
+# expects the installer's trial boot to pass and make the new kernel the
+# default; the fallback scenario makes the trial panic and expects the VM to
+# return to the kernel it first booted by itself.
 #
 # tests/qemu-boot-smoke.sh starts the kernel directly with a minimal
 # initramfs. This test covers what a server goes through instead: package
@@ -11,9 +14,10 @@
 # when /dev/kvm is accessible and falls back to slow TCG emulation otherwise.
 set -euo pipefail
 
-usage='Usage: vm-install-reboot.sh <release-dir> <kernel-release>'
+usage='Usage: vm-install-reboot.sh <release-dir> <kernel-release> [install|fallback]'
 release_dir="${1:?$usage}"
 kernel_release="${2:?$usage}"
+scenario="${3:-install}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir=vm
 console_log=vm-console.log
@@ -31,6 +35,7 @@ die() {
 
 [[ "$kernel_release" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic$ ]] ||
   die "Unexpected kernel release: $kernel_release"
+[[ "$scenario" == install || "$scenario" == fallback ]] || die "Unknown scenario: $scenario"
 [[ -s "$release_dir/SHA256SUMS" ]] || die "$release_dir has no SHA256SUMS."
 [[ ! -e "$work_dir" ]] || die "Remove the existing $work_dir directory first."
 release_dir="$(cd -- "$release_dir" && pwd)"
@@ -59,7 +64,7 @@ cat > "$work_dir/http/user-data" <<EOF
 bootcmd:
   - [systemctl, --no-block, stop, apt-daily.timer, apt-daily-upgrade.timer, apt-daily.service, apt-daily-upgrade.service]
 runcmd:
-  - [bash, -c, "curl -fsS $guest_base_url/vm-guest-install.sh -o /root/vm-guest-install.sh && bash /root/vm-guest-install.sh $guest_base_url $kernel_release"]
+  - [bash, -c, "curl -fsS $guest_base_url/vm-guest-install.sh -o /root/vm-guest-install.sh && bash /root/vm-guest-install.sh $guest_base_url $kernel_release $scenario"]
 EOF
 python3 -m http.server "$http_port" --bind 127.0.0.1 --directory "$work_dir/http" > "$work_dir/http.log" 2>&1 &
 http_server=$!
@@ -86,7 +91,7 @@ else
 fi
 # The kernel's own boot and reboot lines also count, so a stall can be told
 # apart: installing, restarting, or booting the new kernel.
-marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|ACCEPTANCE_[A-Z]+)|Linux version [0-9][^ ]*|reboot: [A-Z][a-z]+( [a-z]+)*'
+marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|ACCEPTANCE_[A-Z]+)|Linux version [0-9][^ ]*|Kernel panic|reboot: [A-Z][a-z]+( [a-z]+)*'
 
 # GitHub Actions annotations stay readable without signing in, unlike the
 # job log, so the outcome and the end of the console are reported there too.
@@ -151,15 +156,29 @@ progress="$(grep -aoE "($marker_pattern)[^[:cntrl:]]*" "$console_log" | cut -c1-
 summary="Accelerator $accelerator, VM ran $(( (SECONDS - vm_started) / 60 )) min, QEMU exit status $qemu_status.
 Progress markers:
 ${progress:-none}"
-if [[ -z "$stopped_reason" && "$qemu_status" -eq 0 ]] &&
-  grep -aFq "VM_ACCEPTANCE_PASS: booted $kernel_release," "$console_log"; then
-  annotate notice 'VM acceptance passed' "$summary"
+passed=false
+if [[ -z "$stopped_reason" && "$qemu_status" -eq 0 ]]; then
+  case "$scenario" in
+    install)
+      grep -aFq "VM_ACCEPTANCE_PASS: install scenario, booted $kernel_release," "$console_log" && passed=true
+      ;;
+    fallback)
+      # The console must also show that the trial started the new kernel and
+      # that it panicked, so the fallback is not just an unchanged first boot.
+      grep -aFq 'VM_ACCEPTANCE_PASS: fallback scenario,' "$console_log" &&
+        grep -aFq "Linux version $kernel_release " "$console_log" &&
+        grep -aFq 'Kernel panic' "$console_log" && passed=true
+      ;;
+  esac
+fi
+if [[ "$passed" == true ]]; then
+  annotate notice "VM acceptance ($scenario) passed" "$summary"
   exit 0
 fi
-failure="${stopped_reason:-the VM stopped without passing the installer verification}"
+failure="${stopped_reason:-the VM stopped without passing the $scenario scenario}"
 console_tail="$(LC_ALL=C sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[^[:print:]\t]//g' "$console_log" |
   grep -v '^[[:space:]]*$' | tail -n 25 | cut -c1-160 || true)"
-annotate error 'VM acceptance failed' "$failure.
+annotate error "VM acceptance ($scenario) failed" "$failure.
 $summary
 
 Last console lines:

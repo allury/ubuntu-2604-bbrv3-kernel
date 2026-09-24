@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Independently versioned installer v1.1.0, derived from stable p2.
+# Independently versioned installer v1.2.0, derived from stable p2.
 # Download one stable GitHub Release, verify it, install it, and
 # optionally reboot. The post-boot systemd service performs the runtime test.
 set -euo pipefail
@@ -29,8 +29,12 @@ while (( $# > 0 )); do
       install_options+=(--allow-no-fallback)
       shift
       ;;
+    --no-boot-once)
+      install_options+=(--no-boot-once)
+      shift
+      ;;
     -h|--help)
-      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot] [--allow-no-fallback]\n' "$0"
+      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot] [--allow-no-fallback] [--no-boot-once]\n' "$0"
       exit 0
       ;;
     *) die "Unknown option: $1" ;;
@@ -186,8 +190,71 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [[ $EUID == 0 ]] || die 'Run with sudo.'
 mode="${1:-install}"
 state=/var/lib/bbrv3-installer
+# Trial boot: GRUB keeps the running kernel as its saved default and boots
+# the new kernel once, through a temporary entry with panic=10, so a kernel
+# that panics or cannot mount its root returns to the saved default by
+# itself. bbrv3-verify makes the new kernel the default only after it passes.
+grub_default_config=/etc/default/grub.d/99-bbrv3-installer.cfg
+trial_config=/boot/grub/custom.cfg
+trial_marker='# Temporary BBRv3 trial boot entry; bbrv3-verify removes it.'
+boot_once_state="$state/boot-once"
+
+# Print the GRUB menu path of a kernel's normal entry, for example
+# gnulinux-advanced-UUID>gnulinux-7.0.0-13402-generic-advanced-UUID.
+grub_entry_path() {
+  awk -v release="$1" -v q="'" '
+    function entry_id(line) {
+      if (!match(line, "[$]menuentry_id_option " q "[^" q "]+" q)) return ""
+      return substr(line, RSTART + 22, RLENGTH - 23)
+    }
+    BEGIN { gsub(/[.]/, "[.]", release) }
+    /^submenu / { submenu = entry_id($0) }
+    /^}/ { submenu = "" }
+    /^[[:space:]]*menuentry / {
+      id = entry_id($0)
+      if (id ~ ("^gnulinux-" release "-advanced-")) {
+        print (submenu == "" ? id : submenu ">" id)
+        exit
+      }
+    }
+  ' /boot/grub/grub.cfg
+}
+
+# Print a copy of the normal entry with the given id as the trial entry. It
+# drops recordfail, which would stop the next boot at the GRUB menu after a
+# failed trial instead of returning to the saved default unattended.
+trial_entry_block() {
+  awk -v id="$1" -v q="'" -v title="BBRv3 trial boot of $2" '
+    !copying && index($0, "$menuentry_id_option " q id q) {
+      copying = 1
+      indent = $0
+      sub(/[^[:space:]].*$/, "", indent)
+      print "menuentry " q title q " --id bbrv3-trial {"
+      next
+    }
+    copying && $0 == indent "}" { print "}"; found = 1; exit }
+    copying && /^[[:space:]]*recordfail[[:space:]]*$/ { next }
+    copying {
+      if ($0 ~ /^[[:space:]]*linux[[:space:]]/) $0 = $0 " panic=10"
+      print
+    }
+    END { if (!found) exit 1 }
+  ' /boot/grub/grub.cfg
+}
+
+remove_trial_entry() {
+  if [[ -f "$trial_config" ]] && grep -Fxq "$trial_marker" "$trial_config"; then
+    rm -f -- "$trial_config"
+  fi
+}
+
 if [[ "$mode" == test ]]; then
   expected="$(cat "$state/expected-release")"
+  if [[ "$(uname -r)" != "$expected" && -f "$boot_once_state" ]]; then
+    remove_trial_entry
+    rm -f -- "$boot_once_state"
+    die "The trial boot of $expected did not pass, so the system runs $(uname -r) and the default boot entry is unchanged. Check the provider console output of that boot before retrying."
+  fi
   [[ "$(uname -r)" == "$expected" ]] || die "Booted $(uname -r), expected $expected. Select the target kernel in GRUB."
   "$state/enable-bbrv3.sh" "$expected"
   zfs_package="linux-main-modules-zfs-$expected"
@@ -231,16 +298,27 @@ with socket.socket() as listener, socket.socket() as client:
 print('PASS: local TCP transfer using bbr (not a throughput or WAN test).')
 PY
   printf 'PASS: booted %s and loaded BBRv3 plus matching OpenZFS modules; review journalctl -k -b for kernel warnings.\n' "$expected"
+  if [[ -f "$boot_once_state" ]]; then
+    # A kernel that boots but loses the network must not become the default.
+    [[ -n "$(ip route show default 2>/dev/null)" ]] ||
+      die "No default route after booting $expected; the previous kernel stays the default boot entry."
+    grub-set-default "$(cat "$boot_once_state")"
+    remove_trial_entry
+    rm -f -- "$boot_once_state"
+    printf 'PASS: %s passed its trial boot and is now the default boot entry.\n' "$expected"
+  fi
   exit 0
 fi
-[[ "$mode" == install ]] || die 'Usage: install-bbrv3.sh install [--reboot] | test'
+[[ "$mode" == install ]] || die 'Usage: install-bbrv3.sh install [--reboot] [--allow-no-fallback] [--no-boot-once] | test'
 allow_no_fallback=false
 reboot_requested=false
+boot_once_requested=true
 shift
 while (( $# > 0 )); do
   case "$1" in
     --allow-no-fallback) allow_no_fallback=true ;;
     --reboot) reboot_requested=true ;;
+    --no-boot-once) boot_once_requested=false ;;
     *) die "Unknown option: $1" ;;
   esac
   shift
@@ -369,6 +447,51 @@ fi
 if [[ -n "$mounted_zfs" || -n "$imported_zpools" ]]; then
   printf '%s\n' 'ZFS usage detected; the matching real OpenZFS kernel package is present and will be installed.'
 fi
+
+# Decide before changing anything whether GRUB can take a single trial boot.
+# GRUB must clear the one-time entry itself while booting; where it cannot
+# write its environment, a failing kernel would be retried on every boot.
+# The file system and storage checks follow Ubuntu's own recordfail logic.
+boot_once_blocker=''
+if [[ "$boot_once_requested" != true ]]; then
+  boot_once_blocker='disabled with --no-boot-once'
+else
+  for tool in grub-editenv grub-probe grub-reboot grub-set-default ip; do
+    command -v "$tool" >/dev/null || { boot_once_blocker="$tool is not installed"; break; }
+  done
+fi
+if [[ -z "$boot_once_blocker" ]]; then
+  grub_fs="$(grub-probe --target=fs /boot/grub 2>/dev/null || true)"
+  grub_abstraction="$(grub-probe --target=abstraction /boot/grub 2>/dev/null || true)"
+  configured_default="$(
+    set +eu
+    GRUB_DEFAULT=0
+    for config in /etc/default/grub /etc/default/grub.d/*.cfg; do
+      [[ -f "$config" && "$config" != "$grub_default_config" ]] || continue
+      # shellcheck source=/dev/null
+      . "$config"
+    done
+    printf '%s' "${GRUB_DEFAULT:-0}"
+  )"
+  case "$grub_fs" in
+    ''|btrfs|cifs|cpiofs|newc|odc|romfs|squash4|tarfs|zfs)
+      boot_once_blocker="GRUB cannot write its environment on the ${grub_fs:-unknown} file system of /boot/grub"
+      ;;
+    *)
+      if [[ -n "$grub_abstraction" ]]; then
+        boot_once_blocker="GRUB cannot write its environment through ${grub_abstraction//$'\n'/ }"
+      elif [[ "$configured_default" != 0 ]]; then
+        boot_once_blocker="GRUB_DEFAULT is already set to $configured_default"
+      fi
+      ;;
+  esac
+fi
+if [[ -z "$boot_once_blocker" ]]; then
+  printf 'The new kernel will get a single trial boot; %s stays the default until it passes.\n' "$(uname -r)"
+else
+  printf 'No trial boot: %s.\n' "$boot_once_blocker"
+fi
+
 # Dependency failures must stop before package installation or reboot.
 python3 - "${packages[@]}" <<'SPACE_CHECK'
 import os
@@ -416,6 +539,17 @@ installed_zfs_owner="${installed_zfs_owner%%: *}"
 installed_zfs_owner="${installed_zfs_owner%%:*}"
 [[ "$installed_zfs_owner" == "linux-main-modules-zfs-$expected" ]] ||
   die 'The target OpenZFS module is not owned by the matching release package.'
+if [[ -z "$boot_once_blocker" ]]; then
+  install -d /etc/default/grub.d
+  printf '%s\n' \
+    '# Written by the BBRv3 installer. GRUB boots the saved entry, which' \
+    '# bbrv3-verify moves to a new kernel only after its trial boot passed.' \
+    '# Delete this file and run update-grub to boot the first entry again.' \
+    'GRUB_DEFAULT=saved' > "$grub_default_config"
+elif [[ -f "$grub_default_config" ]]; then
+  # A saved default from an earlier install would keep booting that kernel.
+  rm -f -- "$grub_default_config"
+fi
 update-grub
 boot_files_ready "$expected" || die 'Target image/initramfs or GRUB references missing; refusing reboot.'
 if [[ -n "$fallback_release" ]]; then
@@ -430,7 +564,8 @@ printf '%s\n' "$expected" > "$state/expected-release"
 cat > /etc/systemd/system/bbrv3-verify.service <<'UNIT'
 [Unit]
 Description=Enable and smoke-test the installed BBRv3 kernel
-After=network.target
+Wants=network-online.target
+After=network-online.target
 ConditionPathExists=/var/lib/bbrv3-installer/expected-release
 [Service]
 Type=oneshot
@@ -441,8 +576,51 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable bbrv3-verify.service
-printf 'Installed %s. Select this kernel in GRUB. After boot: journalctl -u bbrv3-verify -b --no-pager\n' "$expected"
-printf 'Original kernels are retained. This script does not change your GRUB default.\n'
+
+# Arrange the trial boot last, once everything else is in place.
+revert_boot_once() {
+  remove_trial_entry
+  rm -f -- "$grub_default_config" "$boot_once_state"
+  grub-editenv - unset next_entry saved_entry || true
+  update-grub
+}
+if [[ -z "$boot_once_blocker" ]]; then
+  target_entry="$(grub_entry_path "$expected")"
+  fallback_entry="$(grub_entry_path "$(uname -r)")"
+  if [[ -z "$target_entry" || -z "$fallback_entry" ]]; then
+    boot_once_blocker='GRUB has no menu entry for the new or the running kernel'
+    revert_boot_once
+  fi
+fi
+if [[ -z "$boot_once_blocker" ]]; then
+  trial_target="$target_entry"
+  trial_block=''
+  if grep -q 'custom\.cfg' /boot/grub/grub.cfg &&
+    { [[ ! -e "$trial_config" ]] || grep -Fxq "$trial_marker" "$trial_config"; }; then
+    trial_block="$(trial_entry_block "${target_entry##*>}" "$expected" || true)"
+  fi
+  if [[ "$trial_block" == *' --id bbrv3-trial {'* && "$trial_block" == *' panic=10'* ]]; then
+    printf '%s\n%s\n' "$trial_marker" "$trial_block" > "$trial_config"
+    trial_target=bbrv3-trial
+  else
+    printf '%s\n' 'NOTE: No temporary trial entry was written; the trial uses the normal entry without panic=10, so a kernel that hangs or panics needs a reset before GRUB falls back.'
+  fi
+  grub-set-default "$fallback_entry"
+  grub-reboot "$trial_target"
+  grub_env="$(grub-editenv list)"
+  if ! grep -Fxq "saved_entry=$fallback_entry" <<<"$grub_env" ||
+    ! grep -Fxq "next_entry=$trial_target" <<<"$grub_env"; then
+    revert_boot_once
+    die 'GRUB did not record the trial boot; restored booting the first menu entry.'
+  fi
+  printf '%s\n' "$target_entry" > "$boot_once_state"
+  printf 'Installed %s. The next boot tries it once; if it does not come up and pass bbrv3-verify, the following boot returns to %s.\n' "$expected" "$(uname -r)"
+  printf 'bbrv3-verify makes %s the default boot entry after it passes. After boot: journalctl -u bbrv3-verify -b --no-pager\n' "$expected"
+else
+  printf 'Installed %s without a trial boot (%s); GRUB boots it by default because it is listed first.\n' "$expected" "$boot_once_blocker"
+  printf 'After boot: journalctl -u bbrv3-verify -b --no-pager\n'
+fi
+printf 'Original kernels are retained.\n'
 if [[ "$reboot_requested" == true ]]; then systemctl reboot; fi
 BBRV3_INSTALLER_V1
   bash .installer-runtime/install-bbrv3.sh install "${install_options[@]}"

@@ -2,9 +2,11 @@ name: VM acceptance
 
 # Install the latest stable release in a full Ubuntu 26.04 cloud-image VM with
 # the independent installer's installation logic, reboot through GRUB and wait
-# for the installer's boot-time verification. It runs when the installer or
-# the VM test changes; the release workflow runs the same test before it
-# publishes a new kernel.
+# for the installer's boot-time verification. The install scenario expects the
+# trial boot to pass; the fallback scenario makes the trial panic and expects
+# the VM to return to its first kernel by itself. It runs when the installer
+# or the VM test changes; the release workflow runs the install scenario
+# before it publishes a new kernel.
 on:
   workflow_dispatch:
   push:
@@ -26,11 +28,15 @@ concurrency:
 
 jobs:
   vm-acceptance:
-    name: Install the latest stable release in an Ubuntu 26.04 VM and reboot into it
+    name: Install the latest stable release in an Ubuntu 26.04 VM (${{ matrix.scenario }})
     permissions:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [install, fallback]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -71,14 +77,16 @@ jobs:
             echo '::warning::This runner has no /dev/kvm; the VM runs under slow TCG emulation.'
           fi
 
-      - name: Install the release with the installer logic and reboot into it
+      - name: Install the release with the installer logic and reboot
+        env:
+          SCENARIO: ${{ matrix.scenario }}
         shell: bash
-        run: bash tests/vm-install-reboot.sh release "$KERNEL_RELEASE"
+        run: bash tests/vm-install-reboot.sh release "$KERNEL_RELEASE" "$SCENARIO"
 
       - name: Preserve VM console log
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: vm-console-latest-release
+          name: vm-console-latest-release-${{ matrix.scenario }}
           path: vm-console.log
           if-no-files-found: ignore

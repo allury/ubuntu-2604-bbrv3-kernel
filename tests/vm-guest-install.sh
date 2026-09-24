@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Runs as root inside the VM acceptance test, started by cloud-init on the
 # first boot. It downloads a release from the test host, installs it with the
-# independent installer's embedded installation logic and lets the installer
-# reboot. On the next boot a oneshot unit reports the result of the
-# installer's own verification service to the serial console and powers off.
+# independent installer's embedded installation logic and reboots:
+#   install   the installer's trial boot of the new kernel should pass and
+#             make it the default;
+#   fallback  the trial entry is made to panic, and the VM should return to
+#             the kernel it first booted without any help.
+# On the next boot that reaches userspace, a oneshot unit reports the result
+# to the serial console and powers off.
 set -Eeuo pipefail
 
-usage='Usage: vm-guest-install.sh <base-url> <kernel-release>'
+usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback>'
 base_url="${1:?$usage}"
 kernel_release="${2:?$usage}"
+scenario="${3:?$usage}"
 release_dir=/var/tmp/bbrv3-release
-started=/var/lib/bbrv3-acceptance/started
+acceptance_dir=/var/lib/bbrv3-acceptance
+started="$acceptance_dir/started"
 log=/var/log/bbrv3-acceptance.log
 
 # Everything this script and the installer print goes to $log. Only markers
@@ -55,9 +61,15 @@ phase() {
 
 # cloud-init runs this once per instance; never install twice.
 [[ ! -e "$started" ]] || exit 0
-mkdir -p "$(dirname -- "$started")"
+case "$scenario" in
+  install|fallback) ;;
+  *) fail "unknown scenario: $scenario" ;;
+esac
+mkdir -p "$acceptance_dir"
 touch "$started"
-console "VM_INSTALL_START: $kernel_release at $(date -u +%H:%M:%S)"
+printf '%s\n' "$scenario" > "$acceptance_dir/scenario"
+uname -r > "$acceptance_dir/first-boot-release"
+console "VM_INSTALL_START: $kernel_release, $scenario scenario, at $(date -u +%H:%M:%S)"
 
 # cloud-init's bootcmd cancels the first-boot apt-daily jobs. Should one run
 # anyway, wait for it instead of interrupting it, and never stop
@@ -132,27 +144,58 @@ cat > /usr/local/sbin/bbrv3-acceptance-report <<'REPORT'
 #!/usr/bin/env bash
 set -uo pipefail
 report=/var/log/bbrv3-acceptance-report.log
+scenario="$(cat /var/lib/bbrv3-acceptance/scenario)"
+first_boot="$(cat /var/lib/bbrv3-acceptance/first-boot-release)"
 expected="$(cat /var/lib/bbrv3-installer/expected-release 2>/dev/null)"
 booted="$(uname -r)"
-result=PASS
-[[ -n "$expected" && "$booted" == "$expected" ]] || result=FAIL
-systemctl is-active --quiet bbrv3-verify.service || result=FAIL
-initramfs=used
-journalctl -k -b --no-pager | grep -Eq 'Trying to unpack rootfs image as initramfs|Freeing initrd memory' ||
-  { initramfs=not-used; result=FAIL; }
+grub_env="$(grub-editenv list 2>&1)"
+saved_entry="$(sed -n 's/^saved_entry=//p' <<<"$grub_env")"
+problems=()
+# Whatever happened, no trial may be left armed or half cleaned up.
+grep -q '^next_entry=.' <<<"$grub_env" && problems+=('a one-time GRUB entry is still pending')
+[[ ! -e /var/lib/bbrv3-installer/boot-once ]] || problems+=('the trial state was not cleared')
+if [[ -f /boot/grub/custom.cfg ]] && grep -q 'bbrv3-trial' /boot/grub/custom.cfg; then
+  problems+=('the trial entry was not removed')
+fi
+case "$scenario" in
+  install)
+    [[ -n "$expected" && "$booted" == "$expected" ]] || problems+=("booted $booted instead of $expected")
+    systemctl is-active --quiet bbrv3-verify.service || problems+=('bbrv3-verify did not pass')
+    grep -qw 'panic=10' /proc/cmdline || problems+=('this boot did not come from the trial entry')
+    [[ "$saved_entry" == *"gnulinux-$expected-advanced-"* ]] || problems+=("the saved default is ${saved_entry:-unset}")
+    journalctl -k -b --no-pager | grep -Eq 'Trying to unpack rootfs image as initramfs|Freeing initrd memory' ||
+      problems+=('the initramfs was not used')
+    ;;
+  fallback)
+    [[ "$booted" == "$first_boot" ]] || problems+=("booted $booted instead of falling back to $first_boot")
+    systemctl is-failed --quiet bbrv3-verify.service || problems+=('bbrv3-verify did not report the failed trial')
+    journalctl -u bbrv3-verify.service -b --no-pager | grep -q 'trial boot of .* did not pass' ||
+      problems+=('bbrv3-verify did not explain the fallback')
+    [[ "$saved_entry" == *"gnulinux-$first_boot-advanced-"* ]] || problems+=("the saved default is ${saved_entry:-unset}")
+    ;;
+esac
 {
   echo '--- bbrv3-verify.service ---'
   journalctl -u bbrv3-verify.service -b --no-pager
+  echo '--- GRUB environment ---'
+  printf '%s\n' "$grub_env"
   echo '--- failed units ---'
   systemctl --failed --no-pager
   echo '--- kernel messages at warning level or above ---'
   journalctl -k -b -p warning --no-pager | tail -n 80
   printf 'Kernel taint: %s\n' "$(cat /proc/sys/kernel/tainted)"
 } > "$report" 2>&1
-marker="$(printf 'VM_ACCEPTANCE_%s: booted %s, expected %s, initramfs %s, congestion control %s, qdisc %s, tcp_bbr version %s' \
-  "$result" "$booted" "${expected:-missing}" "$initramfs" \
-  "$(sysctl -n net.ipv4.tcp_congestion_control)" "$(sysctl -n net.core.default_qdisc)" \
-  "$(cat /sys/module/tcp_bbr/version 2>/dev/null || echo missing)")"
+if (( ${#problems[@]} == 0 )); then
+  result=PASS
+  details='all checks passed'
+else
+  result=FAIL
+  details="$(IFS=';'; printf '%s' "${problems[*]}")"
+fi
+marker="$(printf 'VM_ACCEPTANCE_%s: %s scenario, booted %s, expected %s, congestion control %s, tcp_bbr version %s; %s' \
+  "$result" "$scenario" "$booted" "${expected:-missing}" \
+  "$(sysctl -n net.ipv4.tcp_congestion_control)" \
+  "$(cat /sys/module/tcp_bbr/version 2>/dev/null || echo missing)" "$details")"
 # Fresh opens of ttyS0, which serial-getty may have hung up already.
 cat "$report" > /dev/ttyS0
 printf '%s\n' "$marker" > /dev/ttyS0
@@ -177,5 +220,16 @@ systemctl enable bbrv3-acceptance-report.service
 
 apt-get update
 console "VM_INSTALL_READY: $(date -u +%H:%M:%S)"
-bash .installer-runtime/install-bbrv3.sh install --reboot
-phase 'installer finished; rebooting into the new kernel'
+if [[ "$scenario" == install ]]; then
+  bash .installer-runtime/install-bbrv3.sh install --reboot
+  phase 'installer finished; rebooting into the trial of the new kernel'
+else
+  bash .installer-runtime/install-bbrv3.sh install
+  grep -q -- '--id bbrv3-trial' /boot/grub/custom.cfg || fail 'the installer wrote no trial entry'
+  grub-editenv list | grep -Fxq 'next_entry=bbrv3-trial' || fail 'the installer did not arm the trial entry'
+  # Break the trial the way a broken kernel would: init exits, the kernel
+  # panics, and panic=10 must bring the VM back to the saved default.
+  sed -i -E 's/^([[:space:]]*linux[[:space:]].*)$/\1 init=\/bin\/false/' /boot/grub/custom.cfg
+  phase 'installer finished; rebooting into a trial entry that panics on purpose'
+  systemctl reboot
+fi
