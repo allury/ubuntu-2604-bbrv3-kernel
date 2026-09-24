@@ -1,0 +1,147 @@
+name: Installer release
+
+# Create the GitHub Release page for an installer-vX.Y.Z tag once the
+# installer checks and the VM acceptance test passed for the tagged commit.
+# The notes come from that version's section of installer/CHANGELOG.md. The
+# release is never marked Latest: the installer resolves /releases/latest to
+# the newest kernel. An existing release is left untouched.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - installer-v*
+    # Adding or changing this workflow on main publishes the page for the
+    # installer version in installer/install.sh, if its tag exists already.
+    branches:
+      - main
+    paths:
+      - .github/workflows/installer-release.yml
+
+permissions: {}
+
+concurrency:
+  group: installer-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create the installer release page
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: tag
+        name: Find the installer tag to publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/installer-v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            version="$(sed -n 's/^# Independently versioned installer v\([0-9][0-9.]*\),.*$/\1/p' installer/install.sh)"
+            tag="installer-v$version"
+          fi
+          [[ "$tag" =~ ^installer-v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "::error::Unexpected installer tag: $tag"; exit 1; }
+          version="${BASH_REMATCH[1]}"
+          if ! git rev-parse -q --verify "refs/tags/$tag^{commit}" > /dev/null; then
+            echo "::notice::$tag has not been pushed yet; there is nothing to publish."
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::The release page for $tag already exists and is left unchanged."
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo 'skip=false'
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "sha=$(git rev-parse "$tag^{commit}")"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: checks
+        name: Wait for the installer checks of the tagged commit
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          SHA: ${{ steps.tag.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workflow in installer-check.yml vm-acceptance.yml; do
+            state=none
+            for _ in $(seq 1 90); do
+              state="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&per_page=20" \
+                --jq '.workflow_runs | if any(.conclusion == "success") then "success"
+                  elif any(.status != "completed") then "running"
+                  elif length == 0 then "none" else "failed" end')"
+              [[ "$state" == success || "$state" == failed ]] && break
+              sleep 60
+            done
+            [[ "$state" == success ]] || {
+              echo "::error::$workflow has not passed for $SHA (state: $state); no release page was created."
+              exit 1
+            }
+            url="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&per_page=20" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success")][0].html_url')"
+            echo "${workflow%.yml}=$url" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Write the release notes from the changelog
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          INSTALLER_RUN: ${{ steps.checks.outputs.installer-check }}
+          VM_RUN: ${{ steps.checks.outputs.vm-acceptance }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          section="$(git show "$TAG:installer/CHANGELOG.md" |
+            awk -v heading="## v$VERSION" '$0 == heading { found = 1; next } found && /^## / { exit } found { print }')"
+          changes="$(grep '^- ' <<<"$section" || true)"
+          limits="$(grep -v '^- ' <<<"$section" | sed '/^[[:space:]]*$/d' || true)"
+          [[ -n "$changes" ]] || { echo "::error::installer/CHANGELOG.md at $TAG has no entries under ## v$VERSION."; exit 1; }
+          installer_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/installer/install.sh"
+          fence='```'
+          {
+            printf '## 更新内容\n\n%s\n\n' "$changes"
+            printf '## 安装\n\n标准安装（保留官方回退内核）：\n\n'
+            printf '%sbash\ncurl -fL %s -o install-bbrv3.sh &&\nsudo bash install-bbrv3.sh --reboot\n%s\n\n' "$fence" "$installer_url" "$fence"
+            printf '接受无官方回退内核的风险后使用：\n\n'
+            printf '%sbash\ncurl -fL %s -o install-bbrv3.sh &&\nsudo bash install-bbrv3.sh --allow-no-fallback --reboot\n%s\n\n' "$fence" "$installer_url" "$fence"
+            printf '%s\n\n' '去掉 `--reboot` 可自行重启；追加 `--tag <内核发布标签>` 可指定内核，全部参数见 `sudo bash install-bbrv3.sh --help`。默认安装最新正式内核，不是本安装器标签。'
+            printf '## 验证与限制\n\n'
+            printf '[独立安装器检查](%s)与[虚拟机验收](%s)已在本标签对应的提交上通过。\n\n' "$INSTALLER_RUN" "$VM_RUN"
+            if [[ -n "$limits" ]]; then
+              printf '%s\n\n' "$limits"
+            fi
+            printf '%s\n' '本次只发布安装器，不编译或修改内核包，更早的安装器标签保留。本发布不设为仓库 Latest，以免影响内核自动选择。'
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create the release without marking it Latest
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+            --title "独立安装器 v$VERSION" --notes-file release-notes.md
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          [[ "$latest" == ubuntu-26.04-bbrv3-* ]] || {
+            echo "::error::/releases/latest now resolves to $latest instead of a kernel release; fix this at once."
+            exit 1
+          }
+          printf '已创建 %s 的发布页，/releases/latest 仍指向内核 %s。\n' "$TAG" "$latest" >> "$GITHUB_STEP_SUMMARY"

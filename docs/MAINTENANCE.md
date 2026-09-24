@@ -6,6 +6,7 @@
 | --- | --- |
 | `.github/workflows/build-kernel.yml` | 官方源解析、完整内核构建、安装与启动验收、发布 |
 | `.github/workflows/installer-check.yml` | 独立安装器检查，不编译内核 |
+| `.github/workflows/installer-release.yml` | 推送 `installer-v*` 标签后，待该提交的安装器检查和虚拟机验收通过，按更新记录创建安装器 Release，不设为 Latest |
 | `.github/workflows/repo-checks.yml` | 修改脚本、测试、补丁或工作流时运行，不编译内核：ShellCheck、工作流解析、补丁批准哈希、脚本行为测试、对当前 Ubuntu 发布源的补丁应用与变化报告，以及用最新正式内核执行 QEMU 冒烟 |
 | `.github/workflows/vm-acceptance.yml` | 修改安装器或虚拟机测试时运行：用安装器的安装逻辑把最新正式内核装进 Ubuntu 26.04 云镜像虚拟机，分别验证试启动通过后成为默认，以及试启动崩溃后自动回到原内核。发布流程在发布新内核前运行前一个场景 |
 | `installer/install.sh` | 用户安装入口，按独立版本标签发布 |
@@ -33,9 +34,9 @@
 1. 修改独立入口及对应测试，不为安装器改动重编译内核。
 2. 通过安装器 CI 与虚拟机验收（修改 `installer/` 时自动运行），其中试启动崩溃后自动回到原内核的场景必须通过。虚拟机验收不能代替真实 VPS；v1.1.0 和 v1.2.0 目前都没有真实 VPS 的重启验收记录。
    修改试启动逻辑时，须保持以下行为：GRUB 无法清除一次性启动项的环境不做试启动；失败的试启动不留下待执行的启动项；只有开机验收可以把新内核设为默认启动项。
-3. 创建新的安装器版本标签，不移动已有标签。
-4. 更新 README 的两种安装命令，使它们引用同一固定版本。
-5. 安装器 Release 设置 `make_latest=false`，避免干扰 `/releases/latest` 选择正式内核。标题及说明使用中文，不改旧标签和内核附件。
+3. 在 `installer/install.sh` 首行注释和 `installer/CHANGELOG.md` 中写明新版本号，并把 README 的两种安装命令改为引用同一新标签。
+4. 在同一次推送中把 `main` 和新的 `installer-vX.Y.Z` 标签推送到同一提交（`git push --atomic`），避免 README 引用尚不存在的标签；不移动已有标签。
+5. 标签推送后，`installer-release.yml` 会等该提交的安装器检查和虚拟机验收通过，再用更新记录中该版本的条目创建中文 Release，并且不设为 Latest，以免干扰 `/releases/latest` 选择正式内核。已存在的 Release 不会被修改，旧标签和内核附件也不会被改动。
 
 内核 Release 随附的历史脚本与独立入口用途不同，不应删除或将它们混用。已发布附件保留原样；修订内核包应发布新版本，而不是覆盖附件。
 
