@@ -12,14 +12,14 @@
 
 要求 Ubuntu 26.04、amd64、systemd 与 GRUB，适用于物理机和可更换内核的全虚拟化 VPS，不适用于共享宿主机内核的容器。需安装 curl、python3；启用 Secure Boot 的机器不能直接使用这些未签名内核镜像。
 
-以下两种方式使用同一个固定版本的独立安装器，默认下载最新正式内核。安装成功后会重启，请先备份并确认服务商救援控制台可用。安装器保留已有内核，不修改 GRUB 默认选项；自定义引导配置可能需要手动选择目标内核。
+以下两种方式使用同一个固定版本的独立安装器，默认下载最新正式内核。安装成功后会重启，请先备份并确认服务商救援控制台可用。安装器保留已有内核，新内核先只试启动一次：起不来会自动回到原内核，开机验收通过后才成为默认启动项；不能试启动的情况见[独立安装器](#独立安装器)。
 
 ### 标准安装（推荐）
 
 要求已安装官方回退内核；缺失时先运行 `sudo apt-get update && sudo apt-get install linux-image-generic`。
 
 ```bash
-curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.1.0/installer/install.sh -o install-bbrv3.sh &&
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.2.0/installer/install.sh -o install-bbrv3.sh &&
 sudo bash install-bbrv3.sh --reboot
 ```
 
@@ -28,11 +28,11 @@ sudo bash install-bbrv3.sh --reboot
 仅在接受风险后使用。此参数只跳过官方回退内核存在性检查，不跳过校验和、依赖、系统环境和 Secure Boot 检查。没有可用回退内核时，启动失败可能需要救援控制台恢复。
 
 ```bash
-curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.1.0/installer/install.sh -o install-bbrv3.sh &&
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.2.0/installer/install.sh -o install-bbrv3.sh &&
 sudo bash install-bbrv3.sh --allow-no-fallback --reboot
 ```
 
-建议执行前阅读下载的脚本。去掉 `--reboot` 可在安装完成后自行重启。要固定安装 p2，追加 `--tag ubuntu-26.04-bbrv3-7.0.0-30.30-p2`。已运行目标内核时无需重复安装。
+建议执行前阅读下载的脚本。去掉 `--reboot` 可在安装完成后自行重启。追加 `--no-boot-once` 可关闭试启动。要固定安装 p2，追加 `--tag ubuntu-26.04-bbrv3-7.0.0-30.30-p2`。已运行目标内核时无需重复安装。
 
 ## 重启后检查
 
@@ -45,7 +45,9 @@ journalctl -u bbrv3-verify -b --no-pager
 sudo bash /var/lib/bbrv3-installer/install-bbrv3.sh test
 ```
 
-预期内核以所选发布页为准。例如 `7.0.0-30.30-p2` 对应 `7.0.0-13002-generic`；不同源码版本的 p2 并非同一内核。若启动失败，在 GRUB 选择保留的原装内核；无回退内核则使用服务商救援环境。不要在新版本验收前删除旧内核。
+预期内核以所选发布页为准。例如 `7.0.0-30.30-p2` 对应 `7.0.0-13002-generic`；不同源码版本的 p2 并非同一内核。试启动通过后，验收日志会注明新内核已成为默认启动项。
+
+试启动时新内核若崩溃或挂不上根分区，会在 10 秒后自动重启回原内核，回到原内核的那次开机，验收日志会说明试启动未通过；若新内核卡住不动，在服务商面板重启一次即可回到原内核。未启用试启动时，启动失败需在 GRUB 菜单选择保留的原装内核；无回退内核则使用服务商救援环境。不要在新版本验收前删除旧内核。
 
 ## 自动编译与发布
 
@@ -56,18 +58,22 @@ sudo bash /var/lib/bbrv3-installer/install-bbrv3.sh test
 3. 验证包名、版本、架构、依赖、模块签名及校验和。
 4. 在干净 Ubuntu 26.04 容器中真实安装包，并编译外部测试模块。
 5. 在 QEMU 中启动产物，验证 BBRv3、OpenZFS 加载和 32 MiB TCP 传输，确认连接上报 BBR 版本 3，且传输期间内核没有报告警告。
-6. 在 Ubuntu 26.04 云镜像虚拟机中用独立安装器的安装逻辑安装，经 GRUB 默认启动项和新生成的 initramfs 重启进入新内核，确认安装器的开机验收服务通过。
+6. 在 Ubuntu 26.04 云镜像虚拟机中用独立安装器的安装逻辑安装，经 GRUB 试启动和新生成的 initramfs 进入新内核，确认开机验收通过后新内核成为默认启动项。
 7. 全部通过才创建正式 Release，不覆盖已有同名版本。
 
 补丁不兼容时停止发布并创建移植问题，不保证未来所有内核均无需人工适配。服务器不会自动安装或重启；新正式版本发布后，主动执行上述安装命令即可更新。
 
 ## 独立安装器
 
-`installer/install.sh` 从稳定 p2 安装逻辑派生，支持显式 `--allow-no-fallback`。当前固定标签为 `installer-v1.1.0`，旧版 `installer-v1.0.0` 保留；更新安装器不需要编译内核，也不修改已发布内核包或附带脚本。
+`installer/install.sh` 从稳定 p2 安装逻辑派生，支持显式 `--allow-no-fallback` 和 `--no-boot-once`。当前固定标签为 `installer-v1.2.0`，旧版 `installer-v1.1.0`、`installer-v1.0.0` 保留；更新安装器不需要编译内核，也不修改已发布内核包或附带脚本。
 
 安装器下载同一内核 Release 的文件，完整验证 `SHA256SUMS`，再运行自身附带的安装逻辑、BBR 启用脚本和配置。不执行内核附件中的安装脚本，也不从可变的 `main` 下载运行组件。历史附件仍保留以兼容旧安装器。
 
-v1.1.0 增加磁盘空间预算、安装锁和镜像/initramfs/GRUB 引用检查，详见 [更新记录](installer/CHANGELOG.md)。不修改默认引导项、不提供启动失败自动回滚。安装器改动和每个新内核都会在 BIOS 引导的 Ubuntu 26.04 云镜像虚拟机中完成一次安装与重启验收；这仍不等同于所有服务商引导配置下的端到端重启验证。
+v1.2.0 起新内核先只试启动一次。安装器把当前运行的内核保留为 GRUB 默认启动项（`GRUB_DEFAULT=saved`，写在 `/etc/default/grub.d/99-bbrv3-installer.cfg`），用临时菜单项（`/boot/grub/custom.cfg`，与新内核的普通启动项相同，只多了 `panic=10`）启动一次新内核。开机验收通过且存在默认路由后，新内核才成为默认启动项，临时菜单项随即删除。
+
+以下情况不做试启动并在安装时说明原因，行为同 v1.1.0，即新内核因版本号靠前直接成为默认启动项：`/boot/grub` 位于 btrfs、ZFS、LVM、软 RAID 等 GRUB 无法写入的位置；`GRUB_DEFAULT` 已被自定义；使用了 `--no-boot-once`。要恢复按菜单顺序启动，删除上述配置文件后运行 `sudo update-grub`。用 v1.2.0 安装过后，后续升级也请使用 v1.2.0 或更新的安装器，旧安装器不会移动 GRUB 保存的默认启动项。详见 [更新记录](installer/CHANGELOG.md)。
+
+安装器改动和每个新内核都会在 BIOS 引导的 Ubuntu 26.04 云镜像虚拟机中完成安装与重启验收；安装器改动还会验证试启动失败后无人干预地回到原内核。这仍不等同于 UEFI、PV-GRUB 等所有服务商引导配置下的端到端验证。
 
 ## 源码与信任边界
 
