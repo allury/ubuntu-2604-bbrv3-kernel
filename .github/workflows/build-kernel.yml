@@ -16,6 +16,15 @@ on:
         description: 'Run actual ZFS compilation with official headers without rebuilding the kernel'
         default: false
         type: boolean
+      rehearsal:
+        description: 'Build and run every acceptance check without publishing, even if the release exists'
+        default: false
+        type: boolean
+  # A push to a rehearsal/ branch rehearses that branch's pipeline the same
+  # way: a full build and every acceptance check, but nothing is published.
+  push:
+    branches:
+      - rehearsal/**
   schedule:
     - cron: '23 2 * * *'
 
@@ -47,6 +56,9 @@ jobs:
       patch_revision: ${{ steps.resolve.outputs.patch_revision }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       build_needed: ${{ steps.release.outputs.build_needed }}
+      rehearsal: ${{ steps.release.outputs.rehearsal }}
+    env:
+      REHEARSAL: ${{ inputs.rehearsal == true || startsWith(github.ref, 'refs/heads/rehearsal/') }}
     steps:
       - name: Bootstrap the Ubuntu 26.04 resolver container
         shell: bash
@@ -94,6 +106,16 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "$api")"
+          [[ "$http_status" == 200 || "$http_status" == 404 ]] || {
+            printf 'ERROR: GitHub release lookup returned HTTP %s.\n' "$http_status" >&2
+            exit 1
+          }
+          if [[ "$REHEARSAL" == true ]]; then
+            printf '%s\n' 'rehearsal=true' 'build_needed=true' >> "$GITHUB_OUTPUT"
+            printf '演练：完整构建 %s 并运行全部验收，但不发布。\n' "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo 'rehearsal=false' >> "$GITHUB_OUTPUT"
           # A green scheduled run usually only means nothing new was released.
           case "$http_status" in
             200)
@@ -104,10 +126,6 @@ jobs:
             404)
               echo 'build_needed=true' >> "$GITHUB_OUTPUT"
               printf '%s 尚未发布，需要构建；是否构建并发布以后续任务的结果为准。\n' "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              printf 'ERROR: GitHub release lookup returned HTTP %s.\n' "$http_status" >&2
-              exit 1
               ;;
           esac
 
@@ -252,7 +270,7 @@ jobs:
           fi
 
       - name: Open a porting issue if the patch no longer applies
-        if: failure() && env.PATCH_PORT_REQUIRED == 'true'
+        if: failure() && env.PATCH_PORT_REQUIRED == 'true' && needs.plan.outputs.rehearsal != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -290,6 +308,10 @@ jobs:
             sed '/^$/q' release/PATCH-BASELINE-DRIFT.txt
             printf '```\n'
           } >> "$GITHUB_STEP_SUMMARY"
+          # Also as an annotation, which is readable without signing in.
+          drift="$(sed -n -E '/^(Review baseline|Built source|Patched files|Changed since baseline|Lines added|Lines removed): /p' \
+            release/PATCH-BASELINE-DRIFT.txt | paste -sd ';' -)"
+          echo "::notice title=Patch baseline drift::$drift"
 
       - name: Give the package a non-conflicting custom ABI
         shell: bash
@@ -577,6 +599,7 @@ jobs:
     needs: [plan, build, install-check, boot-smoke, vm-acceptance]
     if: >-
       needs.plan.outputs.build_needed == 'true' &&
+      needs.plan.outputs.rehearsal != 'true' &&
       needs.build.result == 'success' &&
       needs.install-check.result == 'success' &&
       needs.boot-smoke.result == 'success' &&
