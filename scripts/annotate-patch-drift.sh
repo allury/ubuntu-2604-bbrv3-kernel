@@ -5,7 +5,9 @@
 set -euo pipefail
 
 report="${1:?Usage: annotate-patch-drift.sh <report-file>}"
-max_diff_lines=150
+# The runner cuts every annotation message at 4096 characters without saying
+# so; a diff that does not fit is left to the report file instead.
+max_diff_bytes=4000
 
 escape() {
   local text="$1"
@@ -21,7 +23,8 @@ printf '::notice title=Patch baseline drift::%s\n' "$(escape "$summary")"
 diff_text="$(sed -n '/^diff --git /,$p' "$report")"
 if [[ -n "$diff_text" ]]; then
   diff_lines="$(wc -l <<<"$diff_text")"
-  if (( diff_lines <= max_diff_lines )); then
+  diff_bytes="$(printf '%s' "$diff_text" | LC_ALL=C wc -c)"
+  if (( diff_bytes <= max_diff_bytes )); then
     printf '::notice title=Patch baseline drift diff::%s\n' "$(escape "$diff_text")"
   else
     printf '::notice title=Patch baseline drift diff::%s lines, too long for an annotation; see PATCH-BASELINE-DRIFT.txt.\n' \

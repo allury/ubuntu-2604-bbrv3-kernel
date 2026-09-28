@@ -32,6 +32,11 @@ printf 'still unrelated\n' > "$upstream/README"
 release Ubuntu-7.0.0-31.31
 printf 'int input;\nint changed;\n' > "$upstream/net/ipv4/tcp_input.c"
 release Ubuntu-7.0.0-34.34
+# Under the old 150-line cap, but longer than the runner keeps of an annotation.
+for i in $(seq 1 80); do
+  printf 'int drift_%02d_with_a_long_enough_name_to_fill_an_annotation;\n' "$i"
+done >> "$upstream/net/ipv4/tcp_input.c"
+release Ubuntu-7.0.0-35.35
 
 patch="$test_root/bbrv3-ubuntu-7.0.0-30.30.patch"
 cat > "$patch" <<'PATCH'
@@ -76,6 +81,14 @@ annotations="$(bash "$repo_root/scripts/annotate-patch-drift.sh" "$test_root/rep
 grep -Fq '::notice title=Patch baseline drift::Review baseline: Ubuntu-7.0.0-30.30;Built source: Ubuntu-7.0.0-34.34;' <<<"$annotations"
 grep -Fq '::notice title=Patch baseline drift diff::diff --git a/net/ipv4/tcp_input.c' <<<"$annotations"
 grep -Fq '%0A+int changed;' <<<"$annotations"
+
+# A diff too long for one annotation is pointed to, never cut off silently.
+tree="$(checkout 7.0.0-35.35)"
+"${report_drift[@]}" "$tree" "$patch" "$test_root/report-35" >/dev/null
+(( $(sed -n '/^diff --git /,$p' "$test_root/report-35" | wc -l) < 150 ))
+annotations="$(bash "$repo_root/scripts/annotate-patch-drift.sh" "$test_root/report-35")"
+[[ "$(wc -l <<<"$annotations")" == 2 ]]
+grep -Eq '^::notice title=Patch baseline drift diff::[0-9]+ lines, too long for an annotation; see PATCH-BASELINE-DRIFT\.txt\.$' <<<"$annotations"
 
 # Ubuntu changed only files outside the patch.
 tree="$(checkout 7.0.0-31.31)"
