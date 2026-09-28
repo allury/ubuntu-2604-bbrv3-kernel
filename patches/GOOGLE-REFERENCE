@@ -1,0 +1,17 @@
+# The Google BBRv3 release that the BBRv3 patches in this directory were
+# ported from. scripts/audit-google-bbrv3.sh compares each patch with it.
+# Commits are pinned and every tag must still point at its commit, so the
+# audit report depends on nothing that can change. Changing this file is a
+# review decision, like changing APPROVED-SHA256SUMS.
+google-repository https://github.com/google/bbr
+google-tag bbrv3-2025-03-18
+google-commit 90210de4b779d40496dee0b89081780eeddf2a60
+# The Linux release Google's branch is based on, and how many commits the
+# branch adds on top of it.
+base-repository https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+base-tag v6.13.7
+base-commit 648e04a805652f513af04b47035cde896addf9b0
+google-commits 27
+# Google replaces the whole BBR implementation, so this file is compared as a
+# whole instead of change by change.
+whole-file net/ipv4/tcp_bbr.c

@@ -72,6 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           bash tests/test-apply-bbrv3.sh
+          bash tests/test-audit-google-bbrv3.sh
           bash tests/test-report-patch-drift.sh
           bash tests/test-resolve-source.sh
           bash tests/test-resolve-zfs-source.sh
