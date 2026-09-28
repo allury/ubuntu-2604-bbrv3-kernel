@@ -7,6 +7,7 @@
 | `.github/workflows/build-kernel.yml` | 官方源解析、完整内核构建、安装与启动验收、发布 |
 | `.github/workflows/installer-check.yml` | 独立安装器检查，不编译内核 |
 | `.github/workflows/installer-release.yml` | 推送 `installer-v*` 标签后，待该提交的安装器检查和虚拟机验收通过，按更新记录创建安装器 Release，不设为 Latest |
+| `.github/workflows/network-report.yml` | 手动或修改测量代码时运行：在云镜像虚拟机中通过模拟瓶颈链路，比较官方内核的 CUBIC、BBRv1 与最新正式内核的 CUBIC、BBRv3，生成中文报告；只供参考，不是发布门槛 |
 | `.github/workflows/repo-checks.yml` | 修改脚本、测试、补丁或工作流时运行，不编译内核：ShellCheck、工作流解析、补丁批准哈希、脚本行为测试、对当前 Ubuntu 发布源的补丁应用与变化报告，以及用最新正式内核执行 QEMU 冒烟 |
 | `.github/workflows/vm-acceptance.yml` | 修改安装器或虚拟机测试时运行：用安装器的安装逻辑把最新正式内核装进 Ubuntu 26.04 云镜像虚拟机，分别验证试启动通过后成为默认，以及试启动崩溃后自动回到原内核。发布流程在发布新内核前运行前一个场景 |
 | `installer/install.sh` | 用户安装入口，按独立版本标签发布 |

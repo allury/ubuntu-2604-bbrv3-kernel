@@ -4,7 +4,9 @@
 # for the installer's boot-time verification service. The install scenario
 # expects the installer's trial boot to pass and make the new kernel the
 # default; the fallback scenario makes the trial panic and expects the VM to
-# return to the kernel it first booted by itself.
+# return to the kernel it first booted by itself; the network scenario is the
+# install scenario plus TCP measurements before and after, which
+# tests/vm-network-report.sh turns into a report.
 #
 # tests/qemu-boot-smoke.sh starts the kernel directly with a minimal
 # initramfs. This test covers what a server goes through instead: package
@@ -14,7 +16,7 @@
 # when /dev/kvm is accessible and falls back to slow TCG emulation otherwise.
 set -euo pipefail
 
-usage='Usage: vm-install-reboot.sh <release-dir> <kernel-release> [install|fallback]'
+usage='Usage: vm-install-reboot.sh <release-dir> <kernel-release> [install|fallback|network]'
 release_dir="${1:?$usage}"
 kernel_release="${2:?$usage}"
 scenario="${3:-install}"
@@ -35,7 +37,10 @@ die() {
 
 [[ "$kernel_release" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic$ ]] ||
   die "Unexpected kernel release: $kernel_release"
-[[ "$scenario" == install || "$scenario" == fallback ]] || die "Unknown scenario: $scenario"
+case "$scenario" in
+  install|fallback|network) ;;
+  *) die "Unknown scenario: $scenario" ;;
+esac
 [[ -s "$release_dir/SHA256SUMS" ]] || die "$release_dir has no SHA256SUMS."
 [[ ! -e "$work_dir" ]] || die "Remove the existing $work_dir directory first."
 release_dir="$(cd -- "$release_dir" && pwd)"
@@ -54,6 +59,7 @@ qemu-img create -q -f qcow2 -F qcow2 -b "$image_name" "$work_dir/disk.qcow2" 20G
 ln -s "$release_dir" "$work_dir/http/release"
 install -m 0644 "$repo_root/installer/install.sh" "$work_dir/http/install.sh"
 install -m 0644 "$repo_root/tests/vm-guest-install.sh" "$work_dir/http/vm-guest-install.sh"
+install -m 0644 "$repo_root/tests/vm-network-test.py" "$work_dir/http/vm-network-test.py"
 printf 'instance-id: bbrv3-acceptance\nlocal-hostname: bbrv3-acceptance\n' > "$work_dir/http/meta-data"
 : > "$work_dir/http/vendor-data"
 # bootcmd runs before network-online.target, which the apt-daily jobs wait
@@ -91,7 +97,7 @@ else
 fi
 # The kernel's own boot and reboot lines also count, so a stall can be told
 # apart: installing, restarting, or booting the new kernel.
-marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|ACCEPTANCE_[A-Z]+)|Linux version [0-9][^ ]*|Kernel panic|reboot: [A-Z][a-z]+( [a-z]+)*'
+marker_pattern='VM_(INSTALL_START|PHASE|INSTALL_READY|NETWORK_RESULT|ACCEPTANCE_[A-Z]+)|Linux version [0-9][^ ]*|Kernel panic|reboot: [A-Z][a-z]+( [a-z]+)*'
 
 # GitHub Actions annotations stay readable without signing in, unlike the
 # job log, so the outcome and the end of the console are reported there too.
@@ -168,6 +174,13 @@ if [[ -z "$stopped_reason" && "$qemu_status" -eq 0 ]]; then
       grep -aFq 'VM_ACCEPTANCE_PASS: fallback scenario,' "$console_log" &&
         grep -aFq "Linux version $kernel_release " "$console_log" &&
         grep -aFq 'Kernel panic' "$console_log" && passed=true
+      ;;
+    network)
+      # Both kernels must have finished the same set of measurements.
+      new_results="$(grep -ac "VM_NETWORK_RESULT: kernel=$kernel_release " "$console_log" || true)"
+      all_results="$(grep -ac 'VM_NETWORK_RESULT: ' "$console_log" || true)"
+      grep -aFq "VM_ACCEPTANCE_PASS: network scenario, booted $kernel_release," "$console_log" &&
+        (( new_results > 0 && new_results * 2 == all_results )) && passed=true
       ;;
   esac
 fi

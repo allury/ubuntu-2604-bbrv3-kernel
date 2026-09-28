@@ -5,12 +5,15 @@
 #   install   the installer's trial boot of the new kernel should pass and
 #             make it the default;
 #   fallback  the trial entry is made to panic, and the VM should return to
-#             the kernel it first booted without any help.
+#             the kernel it first booted without any help;
+#   network   as install, and tests/vm-network-test.py measures TCP through
+#             an emulated bottleneck on the image's kernel before the
+#             installation and on the new kernel after it.
 # On the next boot that reaches userspace, a oneshot unit reports the result
 # to the serial console and powers off.
 set -Eeuo pipefail
 
-usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback>'
+usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback|network>'
 base_url="${1:?$usage}"
 kernel_release="${2:?$usage}"
 scenario="${3:?$usage}"
@@ -62,7 +65,7 @@ phase() {
 # cloud-init runs this once per instance; never install twice.
 [[ ! -e "$started" ]] || exit 0
 case "$scenario" in
-  install|fallback) ;;
+  install|fallback|network) ;;
   *) fail "unknown scenario: $scenario" ;;
 esac
 mkdir -p "$acceptance_dir"
@@ -124,6 +127,15 @@ compgen -G "linux-image-unsigned-${kernel_release}_*.deb" > /dev/null ||
   fail "the release does not contain linux-image-unsigned-$kernel_release"
 phase 'release downloaded and verified'
 
+if [[ "$scenario" == network ]]; then
+  install -d /usr/local/lib/bbrv3-acceptance
+  curl -fsS "$base_url/vm-network-test.py" -o /usr/local/lib/bbrv3-acceptance/network-test.py
+  phase "measuring TCP on $(uname -r) before the installation"
+  python3 /usr/local/lib/bbrv3-acceptance/network-test.py | while IFS= read -r line; do
+    console "$line"
+  done
+fi
+
 # Run exactly the installation logic that installer/install.sh embeds, the way
 # it runs it after downloading and verifying a release.
 curl -fsS "$base_url/install.sh" -o /root/bbrv3-installer.sh
@@ -151,6 +163,13 @@ booted="$(uname -r)"
 grub_env="$(grub-editenv list 2>&1)"
 saved_entry="$(sed -n 's/^saved_entry=//p' <<<"$grub_env")"
 problems=()
+if [[ "$scenario" == network ]]; then
+  # Results go to the console line by line, each through a fresh open.
+  if ! python3 /usr/local/lib/bbrv3-acceptance/network-test.py 2> /var/log/bbrv3-network-test.log |
+    while IFS= read -r line; do printf '%s\n' "$line" > /dev/ttyS0; done; then
+    problems+=("the network measurements failed: $(tail -n 3 /var/log/bbrv3-network-test.log | tr '\n' ' ')")
+  fi
+fi
 # Whatever happened, no trial may be left armed or half cleaned up.
 grep -q '^next_entry=.' <<<"$grub_env" && problems+=('a one-time GRUB entry is still pending')
 [[ ! -e /var/lib/bbrv3-installer/boot-once ]] || problems+=('the trial state was not cleared')
@@ -158,7 +177,7 @@ if [[ -f /boot/grub/custom.cfg ]] && grep -q 'bbrv3-trial' /boot/grub/custom.cfg
   problems+=('the trial entry was not removed')
 fi
 case "$scenario" in
-  install)
+  install|network)
     [[ -n "$expected" && "$booted" == "$expected" ]] || problems+=("booted $booted instead of $expected")
     systemctl is-active --quiet bbrv3-verify.service || problems+=('bbrv3-verify did not pass')
     grep -qw 'panic=10' /proc/cmdline || problems+=('this boot did not come from the trial entry')
@@ -220,7 +239,7 @@ systemctl enable bbrv3-acceptance-report.service
 
 apt-get update
 console "VM_INSTALL_READY: $(date -u +%H:%M:%S)"
-if [[ "$scenario" == install ]]; then
+if [[ "$scenario" != fallback ]]; then
   bash .installer-runtime/install-bbrv3.sh install --reboot
   phase 'installer finished; rebooting into the trial of the new kernel'
 else
