@@ -79,7 +79,7 @@ v1.2.0 起新内核先只试启动一次。安装器把当前运行的内核保�
 ## 源码与信任边界
 
 - 内核：[Ubuntu 内核团队 resolute 仓库](https://git.launchpad.net/~ubuntu-kernel/ubuntu/+source/linux/+git/resolute)，精确发布标签；解析已签名的正式 APT 元数据，排除 proposed、backports 和 PPA。
-- BBRv3：[Google BBR](https://github.com/google/bbr/tree/v3)；当前 Linux 7.0 移植补丁来自第三方 [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3)，不是 Google 官方 Ubuntu 补丁。补丁存放在本仓库并记录来源提交；构建前核对其 SHA-256 与维护者批准值，执行精确应用检查，并在 Release 附件 `PATCH-BASELINE-DRIFT.txt` 中列出补丁涉及文件相对审核基线的 Ubuntu 改动，详见 [补丁策略](patches/README.md)。
+- BBRv3：[Google BBR](https://github.com/google/bbr/tree/v3)；当前 Linux 7.0 移植补丁来自第三方 [byJoey/Actions-bbr-v3](https://github.com/byJoey/Actions-bbr-v3)，不是 Google 官方 Ubuntu 补丁。补丁存放在本仓库并记录来源提交；构建前核对其 SHA-256 与维护者批准值，执行精确应用检查，并在 Release 附件 `PATCH-BASELINE-DRIFT.txt` 中列出补丁涉及文件相对审核基线的 Ubuntu 改动，详见 [补丁策略](patches/README.md)。补丁与 Google 原版的逐行对照及逐项结论见 [Google 对照审计](docs/GOOGLE-AUDIT.md)。
 - OpenZFS：Ubuntu 官方 `zfs-dkms` 源码，针对自定义 ABI 编译并使用该内核构建密钥签名。
 - 构建与恢复：[构建恢复说明](docs/BUILD-RECOVERY.md)；[补丁策略](patches/README.md)。
 

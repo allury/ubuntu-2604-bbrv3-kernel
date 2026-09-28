@@ -5,6 +5,7 @@
 | 路径 | 用途 |
 | --- | --- |
 | `.github/workflows/build-kernel.yml` | 官方源解析、完整内核构建、安装与启动验收、发布；发布后测量网络行为，并把报告追加到 Release 说明（不作门槛） |
+| `.github/workflows/google-audit.yml` | 修改补丁、参考版本或审计脚本时运行：把每个补丁与其所依据的 Google BBRv3 版本逐行对照，逐字节复核 `docs/google-audit/` 中已提交的报告，并提示 Google 是否有更新的 BBRv3 版本；只供审阅，不是发布门槛 |
 | `.github/workflows/installer-check.yml` | 独立安装器检查，不编译内核 |
 | `.github/workflows/installer-release.yml` | 推送 `installer-v*` 标签后，待该提交的安装器检查和虚拟机验收通过，按更新记录创建安装器 Release，不设为 Latest |
 | `.github/workflows/network-report.yml` | 手动或修改测量代码时运行：在云镜像虚拟机中通过模拟瓶颈链路，比较官方内核的 CUBIC、BBRv1 与最新正式内核的 CUBIC、BBRv3，生成中文报告；只供参考，不是发布门槛。每次发布新内核时，构建流程会用同一套测量自动生成报告 |
@@ -15,7 +16,7 @@
 | `config/` | 内核附件的基线配置；独立安装器内嵌自己的配置 |
 | `patches/` | 固定补丁与移植策略 |
 | `tests/` | 源版本解析、安装器分支、ZFS 预检、QEMU、云镜像虚拟机安装重启和外部模块测试 |
-| `docs/` | 项目维护和构建恢复说明 |
+| `docs/` | 项目维护和构建恢复说明，以及 Google 对照审计报告 |
 
 根目录仅保留项目介绍和仓库配置。临时构建目录、下载包、签名密钥、日志和本地工作记录不应提交。
 
@@ -45,7 +46,7 @@
 
 定时任务只负责检查、编译、验收和发布；不会修改服务器。补丁无法精确应用时需要人工适配，不以绕过测试来完成发布。
 
-补丁只有在维护者审核后，才能在同一提交中把 SHA-256 写入 `patches/APPROVED-SHA256SUMS`；构建拒绝未列入清单的补丁。每个 Release 附带的 `PATCH-BASELINE-DRIFT.txt` 列出补丁涉及文件相对审核基线的 Ubuntu 改动，有变化时应审阅，详见 [补丁策略](../patches/README.md)。
+补丁只有在维护者审核后，才能在同一提交中把 SHA-256 写入 `patches/APPROVED-SHA256SUMS`；构建拒绝未列入清单的补丁。审核前先用 Google 对照审计把补丁与其所依据的 Google BBRv3 版本逐行比较，并把审阅后的报告提交到 `docs/google-audit/`。每个 Release 附带的 `PATCH-BASELINE-DRIFT.txt` 列出补丁涉及文件相对审核基线的 Ubuntu 改动，有变化时应审阅，详见 [补丁策略](../patches/README.md)。
 
 修改构建流程后，可以先演练，不必等 Ubuntu 发布新内核：手动运行构建工作流时勾选 `rehearsal`，或推送一个 `rehearsal/` 开头的分支。演练会完整构建当前已发布的 Ubuntu 源码，并运行全部验收，即使该版本已经发布也照常构建；但不发布，也不创建移植 issue。演练用完的分支应删除。
 
