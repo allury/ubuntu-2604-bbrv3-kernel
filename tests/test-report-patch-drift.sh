@@ -70,12 +70,20 @@ grep -Fxq -- '-int unchanged;' "$test_root/report-34"
 grep -Fxq '+int changed;' "$test_root/report-34"
 absent -Fq unrelated "$test_root/report-34"
 
+# The summary and the short diff become one-line annotations.
+annotations="$(bash "$repo_root/scripts/annotate-patch-drift.sh" "$test_root/report-34")"
+[[ "$(wc -l <<<"$annotations")" == 2 ]]
+grep -Fq '::notice title=Patch baseline drift::Review baseline: Ubuntu-7.0.0-30.30;Built source: Ubuntu-7.0.0-34.34;' <<<"$annotations"
+grep -Fq '::notice title=Patch baseline drift diff::diff --git a/net/ipv4/tcp_input.c' <<<"$annotations"
+grep -Fq '%0A+int changed;' <<<"$annotations"
+
 # Ubuntu changed only files outside the patch.
 tree="$(checkout 7.0.0-31.31)"
 "${report_drift[@]}" "$tree" "$patch" "$test_root/report-31" >/dev/null
 grep -Fxq 'Changed since baseline: 0' "$test_root/report-31"
 grep -Fxq 'Lines added: 0' "$test_root/report-31"
 absent -q "^diff --git " "$test_root/report-31"
+[[ "$(bash "$repo_root/scripts/annotate-patch-drift.sh" "$test_root/report-31" | wc -l)" == 1 ]]
 
 # Building the reviewed baseline itself needs no second tag.
 tree="$(checkout 7.0.0-30.30)"

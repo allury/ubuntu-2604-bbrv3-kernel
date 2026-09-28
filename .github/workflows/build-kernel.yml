@@ -308,10 +308,7 @@ jobs:
             sed '/^$/q' release/PATCH-BASELINE-DRIFT.txt
             printf '```\n'
           } >> "$GITHUB_STEP_SUMMARY"
-          # Also as an annotation, which is readable without signing in.
-          drift="$(sed -n -E '/^(Review baseline|Built source|Patched files|Changed since baseline|Lines added|Lines removed): /p' \
-            release/PATCH-BASELINE-DRIFT.txt | paste -sd ';' -)"
-          echo "::notice title=Patch baseline drift::$drift"
+          bash scripts/annotate-patch-drift.sh release/PATCH-BASELINE-DRIFT.txt
 
       - name: Give the package a non-conflicting custom ABI
         shell: bash

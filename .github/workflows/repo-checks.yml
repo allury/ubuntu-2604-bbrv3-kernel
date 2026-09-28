@@ -132,6 +132,7 @@ jobs:
             sed '/^$/q' PATCH-BASELINE-DRIFT.txt
             printf '```\n'
           } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/annotate-patch-drift.sh PATCH-BASELINE-DRIFT.txt
 
       - name: Preserve the drift report
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
