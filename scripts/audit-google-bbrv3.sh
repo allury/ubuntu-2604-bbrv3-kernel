@@ -147,8 +147,9 @@ contains() {
 }
 
 for path in "${whole_files[@]}"; do
-  contains "$path" "${google_files[@]}" && contains "$path" "${port_files[@]}" ||
+  if ! contains "$path" "${google_files[@]}" || ! contains "$path" "${port_files[@]}"; then
     die "whole-file $path is not changed by both Google and the port."
+  fi
 done
 
 # Parses both -U0 diffs, pairs up identical lines and writes the sections of
