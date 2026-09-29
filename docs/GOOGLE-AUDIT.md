@@ -16,7 +16,7 @@ BBRv3 算法与 Google 官方实现一致，没有发现第三方夹带的额外
 | --- | --- |
 | 补丁 | `bbrv3-ubuntu-7.0.0-30.30.patch`，SHA-256 `e4bd6d0b992a94c315caf85ff91b2851909f148337327714277df1970b292039` |
 | 移植基线 | Ubuntu 标签 `Ubuntu-7.0.0-30.30`，提交 `d974a4063f5c03c13b4f241a9ab511750e0b9f12` |
-| Google 版本 | [google/bbr](https://github.com/google/bbr) 标签 `bbrv3-2025-03-18`，提交 `90210de4b779d40496dee0b89081780eeddf2a60`，即 `v3` 分支当前所指 |
+| Google 版本 | [google/bbr](https://github.com/google/bbr) 标签 `bbrv3-2025-03-18`，提交 `90210de4b779d40496dee0b89081780eeddf2a60`；审计时 `v3` 分支也指向这个提交 |
 | Google 基线 | Linux `v6.13.7`（提交 `648e04a805652f513af04b47035cde896addf9b0`，kernel.org 稳定版仓库），Google 版本在其上加 27 个提交 |
 | 改动文件 | Google 31 个（其中 13 个是测试和说明文件），本补丁 16 个 |
 
@@ -33,7 +33,7 @@ return (tcp_sk(sk)->ecn_flags & TCP_ECN_OK) &&
 return tcp_ecn_mode_any(tp) && (tp->ecn_flags & TCP_ECN_LOW);
 ```
 
-Linux 7.0 为支持 AccECN，用"ECN 模式"取代了 `TCP_ECN_OK` 标志位，`tcp_ecn_mode_any()` 在协商成功经典 ECN 或 AccECN 时为真。因此在本补丁中，协商成功 AccECN 的连接也算作可以使用 ECN。这个函数只在连接启用了 ECN low 时起作用；ECN low 由路由特性 `ecn_low` 开启，默认不启用。
+Linux 7.0 为支持 AccECN，用"ECN 模式"取代了 `TCP_ECN_OK` 标志位，`tcp_ecn_mode_any()` 在连接处于经典 ECN 或 AccECN 模式时为真，对应 6.13 中 `TCP_ECN_OK` 的含义，只是多包含了 7.0 新增的 AccECN。因此在本补丁中，使用 AccECN 的连接也算作可以使用 ECN。这个函数只在连接启用了 ECN low 时起作用；ECN low 由路由特性 `ecn_low` 开启，默认不启用。
 
 Linux 在 6.13.7 与 7.0 之间对原 BBRv1 文件的改动，只有两处 `snd_ssthresh` 写入改为 `WRITE_ONCE()`。见下文"移植没有带上的 Linux 改动"。
 
@@ -44,7 +44,7 @@ Linux 在 6.13.7 与 7.0 之间对原 BBRv1 文件的改动，只有两处 `snd_
 | `TCP_ECN_LOW`、`TCP_ECN_ECT_PERMANENT`（`include/net/tcp.h`） | 16、32 | `BIT(5)`、`BIT(6)` | 7.0 中 16 即 `BIT(4)`，已被 `TCP_ECN_MODE_ACCECN` 占用；`BIT(5)`、`BIT(6)` 在 7.0 的 8 位 `ecn_flags` 中空闲 |
 | `TCP_CONG_WANTS_CE_EVENTS`（`include/net/tcp.h`） | 0x4 | `BIT(5)` | 7.0 中 0x4 即 `BIT(2)`，已被 `TCP_CONG_NEEDS_ACCECN` 占用，`BIT(0)` 至 `BIT(4)` 都已使用；两边都把它加入 `TCP_CONG_MASK` |
 | ECN low 在 `tcp_info` 中的标志（`include/uapi/linux/tcp.h`、`net/ipv4/tcp.c`） | `tcpi_options` 的 128 | `tcpi_options2` 的 `BIT(0)` | 7.0 中 128 已是 `TCPI_OPT_TFO_CHILD`；`tcpi_options2` 是 7.0 新增的字段，尚无其他标志 |
-| 速率采样的记账（Google 改在 `tcp_rate.c`） | `tcp_rate.c` | `tcp_input.c`、`tcp_output.c` | 7.0 把 `tcp_rate.c` 的函数并入这两个文件；`tcp_set_tx_in_flight()` 随之成为 `tcp_output.c` 的内部函数，`tcp.h` 不再声明它 |
+| 速率采样的记账（Google 改在 `tcp_rate.c`） | `tcp_rate.c` | `tcp_input.c`、`tcp_output.c` | 7.0 删除了 `tcp_rate.c`，把其中的函数并入这两个文件；`tcp_set_tx_in_flight()` 随之成为 `tcp_output.c` 的内部函数，`tcp.h` 不再声明它 |
 | SYN 报文上的 ECN low（Google 改在 `tcp_output.c`） | `tcp_output.c` | `include/net/tcp_ecn.h` | 7.0 把 ECN 相关函数移到了 `tcp_ecn.h` |
 | `tcp_set_tx_in_flight()` 的告警信息 | `tp->snd_cwnd` | `tcp_snd_cwnd(tp)` | 7.0 统一用访问函数读取拥塞窗口，取到的值相同 |
 | `fast_ack_mode` 位（`include/linux/tcp.h`） | 把 `recvmsg_inq` 所在位域改为 32 位后加入 | 直接加入 7.0 已有的位域 | 7.0 的结构体布局不同 |
