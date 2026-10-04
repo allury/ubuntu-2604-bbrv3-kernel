@@ -22,6 +22,16 @@ jobs:
         with:
           persist-credentials: false
       - run: shellcheck installer/install.sh
+      # The scripts embedded as here-documents are data to the check above;
+      # check them as the shell scripts they become.
+      - name: ShellCheck the embedded scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in BBRV3_ENABLE_V1_1 BBRV3_INSTALLER_V1; do
+            sed -n "/<<'$name'\$/,/^$name\$/p" installer/install.sh | sed '1d;$d' > "$RUNNER_TEMP/$name.sh"
+            shellcheck --severity=warning "$RUNNER_TEMP/$name.sh"
+          done
       - run: python3 tests/test-independent-installer.py
       - run: |
           bash tests/test-resolve-source.sh

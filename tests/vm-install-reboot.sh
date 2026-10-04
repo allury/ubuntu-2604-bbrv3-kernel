@@ -6,7 +6,9 @@
 # default; the fallback scenario makes the trial panic and expects the VM to
 # return to the kernel it first booted by itself; the network scenario is the
 # install scenario plus TCP measurements before and after, which
-# tests/vm-network-report.sh turns into a report.
+# tests/vm-network-report.sh turns into a report; the restore scenario is the
+# install scenario followed by the installer's restore action, and expects
+# the VM to come back on its first kernel with BBRv3 switched off.
 #
 # tests/qemu-boot-smoke.sh starts the kernel directly with a minimal
 # initramfs. This test covers what a server goes through instead: package
@@ -16,7 +18,7 @@
 # when /dev/kvm is accessible and falls back to slow TCG emulation otherwise.
 set -euo pipefail
 
-usage='Usage: vm-install-reboot.sh <release-dir> <kernel-release> [install|fallback|network]'
+usage='Usage: vm-install-reboot.sh <release-dir> <kernel-release> [install|fallback|network|restore]'
 release_dir="${1:?$usage}"
 kernel_release="${2:?$usage}"
 scenario="${3:-install}"
@@ -38,7 +40,7 @@ die() {
 [[ "$kernel_release" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-generic$ ]] ||
   die "Unexpected kernel release: $kernel_release"
 case "$scenario" in
-  install|fallback|network) ;;
+  install|fallback|network|restore) ;;
   *) die "Unknown scenario: $scenario" ;;
 esac
 [[ -s "$release_dir/SHA256SUMS" ]] || die "$release_dir has no SHA256SUMS."
@@ -174,6 +176,13 @@ if [[ -z "$stopped_reason" && "$qemu_status" -eq 0 ]]; then
       grep -aFq 'VM_ACCEPTANCE_PASS: fallback scenario,' "$console_log" &&
         grep -aFq "Linux version $kernel_release " "$console_log" &&
         grep -aFq 'Kernel panic' "$console_log" && passed=true
+      ;;
+    restore)
+      # The new kernel must have booted, and the VM must have come back
+      # on its first kernel after the restore.
+      grep -aFq 'VM_ACCEPTANCE_PASS: restore scenario,' "$console_log" &&
+        grep -aFq "Linux version $kernel_release " "$console_log" &&
+        grep -aFq 'restoring the official kernel' "$console_log" && passed=true
       ;;
     network)
       # Both kernels must have finished the same set of measurements.

@@ -4,9 +4,10 @@ name: VM acceptance
 # the independent installer's installation logic, reboot through GRUB and wait
 # for the installer's boot-time verification. The install scenario expects the
 # trial boot to pass; the fallback scenario makes the trial panic and expects
-# the VM to return to its first kernel by itself. It runs when the installer
-# or the VM test changes; the release workflow runs the install scenario
-# before it publishes a new kernel.
+# the VM to return to its first kernel by itself; the restore scenario passes
+# the trial and then lets the installer restore the official kernel. It runs
+# when the installer or the VM test changes; the release workflow runs the
+# install scenario before it publishes a new kernel.
 on:
   workflow_dispatch:
   push:
@@ -36,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [install, fallback]
+        scenario: [install, fallback, restore]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

@@ -8,12 +8,15 @@
 #             the kernel it first booted without any help;
 #   network   as install, and tests/vm-network-test.py measures TCP through
 #             an emulated bottleneck on the image's kernel before the
-#             installation and on the new kernel after it.
+#             installation and on the new kernel after it;
+#   restore   as install, then the installer's restore action returns the
+#             VM to the official kernel it first booted, with BBRv3 off.
 # On the next boot that reaches userspace, a oneshot unit reports the result
-# to the serial console and powers off.
+# to the serial console and powers off. The restore scenario reports once
+# more, after the boot that follows the restore.
 set -Eeuo pipefail
 
-usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback|network>'
+usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback|network|restore>'
 base_url="${1:?$usage}"
 kernel_release="${2:?$usage}"
 scenario="${3:?$usage}"
@@ -65,7 +68,7 @@ phase() {
 # cloud-init runs this once per instance; never install twice.
 [[ ! -e "$started" ]] || exit 0
 case "$scenario" in
-  install|fallback|network) ;;
+  install|fallback|network|restore) ;;
   *) fail "unknown scenario: $scenario" ;;
 esac
 mkdir -p "$acceptance_dir"
@@ -156,9 +159,14 @@ cat > /usr/local/sbin/bbrv3-acceptance-report <<'REPORT'
 #!/usr/bin/env bash
 set -uo pipefail
 report=/var/log/bbrv3-acceptance-report.log
-scenario="$(cat /var/lib/bbrv3-acceptance/scenario)"
-first_boot="$(cat /var/lib/bbrv3-acceptance/first-boot-release)"
-expected="$(cat /var/lib/bbrv3-installer/expected-release 2>/dev/null)"
+actions=/var/log/bbrv3-acceptance-actions.log
+acceptance=/var/lib/bbrv3-acceptance
+installer=/var/lib/bbrv3-installer/install-bbrv3.sh
+scenario="$(cat "$acceptance/scenario")"
+first_boot="$(cat "$acceptance/first-boot-release")"
+# The restore action removes the installer state, so keep a copy.
+expected="$(cat /var/lib/bbrv3-installer/expected-release 2>/dev/null ||
+  cat "$acceptance/expected-release" 2>/dev/null)"
 booted="$(uname -r)"
 grub_env="$(grub-editenv list 2>&1)"
 saved_entry="$(sed -n 's/^saved_entry=//p' <<<"$grub_env")"
@@ -176,14 +184,62 @@ grep -q '^next_entry=.' <<<"$grub_env" && problems+=('a one-time GRUB entry is s
 if [[ -f /boot/grub/custom.cfg ]] && grep -q 'bbrv3-trial' /boot/grub/custom.cfg; then
   problems+=('the trial entry was not removed')
 fi
+trial_checks() {
+  [[ -n "$expected" && "$booted" == "$expected" ]] || problems+=("booted $booted instead of $expected")
+  systemctl is-active --quiet bbrv3-verify.service || problems+=('bbrv3-verify did not pass')
+  grep -qw 'panic=10' /proc/cmdline || problems+=('this boot did not come from the trial entry')
+  [[ "$saved_entry" == *"gnulinux-$expected-advanced-"* ]] || problems+=("the saved default is ${saved_entry:-unset}")
+  journalctl -k -b --no-pager | grep -Eq 'Trying to unpack rootfs image as initramfs|Freeing initrd memory' ||
+    problems+=('the initramfs was not used')
+}
 case "$scenario" in
   install|network)
-    [[ -n "$expected" && "$booted" == "$expected" ]] || problems+=("booted $booted instead of $expected")
-    systemctl is-active --quiet bbrv3-verify.service || problems+=('bbrv3-verify did not pass')
-    grep -qw 'panic=10' /proc/cmdline || problems+=('this boot did not come from the trial entry')
-    [[ "$saved_entry" == *"gnulinux-$expected-advanced-"* ]] || problems+=("the saved default is ${saved_entry:-unset}")
-    journalctl -k -b --no-pager | grep -Eq 'Trying to unpack rootfs image as initramfs|Freeing initrd memory' ||
-      problems+=('the initramfs was not used')
+    trial_checks
+    if [[ "$scenario" == install ]]; then
+      # The installer's management actions on the installed system.
+      bash "$installer" status > "$actions" 2>&1 || problems+=('the status action failed')
+      grep -q 'BBR 模块版本 3' "$actions" || problems+=('the status action did not report BBR version 3')
+      bash "$installer" clean --yes >> "$actions" 2>&1 || problems+=('the clean action failed')
+      grep -q '没有可以清理的旧内核' "$actions" || problems+=('the clean action wanted to remove a kernel')
+      if command -v dracut > /dev/null &&
+        [[ "$(cat /etc/dracut.conf.d/90-bbrv3.conf 2>/dev/null)" != 'force_drivers+=" sch_fq tcp_bbr "' ]]; then
+        problems+=('the dracut configuration was not written')
+      fi
+      # A link that came up before default_qdisc=fq keeps pfifo_fast; the
+      # verification moves it to fq on every boot.
+      nic="$(ip route show default | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+      if [[ -z "$nic" ]] || ! tc qdisc replace dev "$nic" root pfifo_fast; then
+        problems+=('could not set up a pfifo_fast queue')
+      else
+        /var/lib/bbrv3-installer/enable-bbrv3.sh "$expected" >> "$actions" 2>&1 ||
+          problems+=('enable-bbrv3.sh failed')
+        tc qdisc show dev "$nic" | grep -q '^qdisc fq ' || problems+=("enable-bbrv3.sh left no fq queue on $nic")
+      fi
+    fi
+    ;;
+  restore)
+    if [[ ! -e "$acceptance/restored" ]]; then
+      trial_checks
+      if (( ${#problems[@]} == 0 )); then
+        printf '%s\n' "$expected" > "$acceptance/expected-release"
+        touch "$acceptance/restored"
+        printf 'VM_PHASE: %s restoring the official kernel\n' "$(date -u +%H:%M:%S)" > /dev/ttyS0
+        if bash "$installer" restore --yes --reboot >> "$actions" 2>&1; then
+          exit 0
+        fi
+        problems+=('the restore action failed')
+      fi
+    else
+      [[ "$booted" == "$first_boot" ]] || problems+=("booted $booted instead of the official $first_boot")
+      [[ "$saved_entry" == *"gnulinux-$first_boot-advanced-"* ]] || problems+=("the saved default is ${saved_entry:-unset}")
+      for path in /etc/systemd/system/bbrv3-verify.service /etc/sysctl.d/99-bbrv3.conf \
+        /etc/dracut.conf.d/90-bbrv3.conf /var/lib/bbrv3-installer; do
+        [[ ! -e "$path" ]] || problems+=("$path is still there")
+      done
+      [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "linux-image-unsigned-$expected" 2>/dev/null)" == ii* ]] ||
+        problems+=('the BBRv3 kernel package was removed')
+      [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" != bbr ]] || problems+=('bbr is still the congestion control')
+    fi
     ;;
   fallback)
     [[ "$booted" == "$first_boot" ]] || problems+=("booted $booted instead of falling back to $first_boot")
@@ -194,6 +250,10 @@ case "$scenario" in
     ;;
 esac
 {
+  echo '--- installer actions ---'
+  cat "$actions" 2>/dev/null
+  echo '--- queues ---'
+  tc qdisc show
   echo '--- bbrv3-verify.service ---'
   journalctl -u bbrv3-verify.service -b --no-pager
   echo '--- GRUB environment ---'
@@ -226,7 +286,7 @@ cat > /etc/systemd/system/bbrv3-acceptance-report.service <<'UNIT'
 [Unit]
 Description=Report the BBRv3 installer verification to the serial console
 After=bbrv3-verify.service
-ConditionPathExists=/var/lib/bbrv3-installer/expected-release
+ConditionPathExists=/var/lib/bbrv3-acceptance/started
 
 [Service]
 Type=oneshot

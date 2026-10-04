@@ -1,45 +1,243 @@
 #!/usr/bin/env bash
-# Independently versioned installer v1.2.0, derived from stable p2.
-# Download one stable GitHub Release, verify it, install it, and
-# optionally reboot. The post-boot systemd service performs the runtime test.
+# Independently versioned installer v1.3.0, derived from stable p2.
+# Without arguments in a terminal it shows a menu. With options, or without a
+# terminal, it downloads one stable GitHub Release, verifies it, installs it
+# and optionally reboots, as earlier versions did. The post-boot systemd
+# service performs the runtime test.
 set -euo pipefail
 
 readonly repository='allury/ubuntu-2604-bbrv3-kernel'
+readonly installer_version='1.3.0'
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
 
+usage() {
+  cat <<USAGE
+用法：
+  sudo bash $0
+      在终端里运行时显示菜单。
+  sudo bash $0 [install] [--reboot] [--tag 内核发布标签] [--allow-no-fallback] [--no-boot-once]
+      直接安装或升级到最新正式内核，适合无人值守；不在终端里运行时也是这样。
+  sudo bash $0 status
+      检查 BBRv3。
+  sudo bash $0 clean [--yes]
+      清理旧的 BBRv3 内核。
+  sudo bash $0 fallback [--yes]
+      安装 Ubuntu 官方备用内核。
+  sudo bash $0 restore [--yes] [--reboot]
+      恢复官方内核并停用 BBRv3。
+--yes 跳过确认，供脚本使用。
+USAGE
+}
+
+for argument in "$@"; do
+  case "$argument" in -h|--help) usage; exit 0 ;; esac
+done
 [[ $EUID == 0 ]] || die 'Run with sudo.'
+
+# A terminal without arguments gets the menu. Anything else installs, as in
+# earlier versions, unless the first argument names another action.
+action=install
+if (( $# == 0 )); then
+  if [[ -t 0 && -t 1 ]]; then action=menu; fi
+else
+  case "$1" in
+    install|status|clean|fallback|restore) action="$1"; shift ;;
+  esac
+fi
 requested_tag='latest'
 install_options=()
+manage_options=()
 while (( $# > 0 )); do
   case "$1" in
     --tag)
+      [[ "$action" == install ]] || die '--tag only applies to installation.'
       (( $# >= 2 )) || die '--tag requires a release tag.'
       requested_tag="$2"
       shift 2
       ;;
     --reboot)
-      install_options+=(--reboot)
+      case "$action" in
+        install) install_options+=(--reboot) ;;
+        restore) manage_options+=(--reboot) ;;
+        *) die "--reboot does not apply to $action." ;;
+      esac
       shift
       ;;
-    --allow-no-fallback)
-      install_options+=(--allow-no-fallback)
+    --allow-no-fallback|--no-boot-once)
+      [[ "$action" == install ]] || die "$1 only applies to installation."
+      install_options+=("$1")
       shift
       ;;
-    --no-boot-once)
-      install_options+=(--no-boot-once)
+    --yes)
+      case "$action" in
+        clean|fallback|restore) manage_options+=(--yes) ;;
+        *) die "--yes does not apply to $action." ;;
+      esac
       shift
-      ;;
-    -h|--help)
-      printf 'Usage: %s [--tag ubuntu-26.04-bbrv3-VERSION-pN] [--reboot] [--allow-no-fallback] [--no-boot-once]\n' "$0"
-      exit 0
       ;;
     *) die "Unknown option: $1" ;;
   esac
 done
+
+if [[ "$action" != install ]]; then
+  for tool in bash curl mktemp python3 readlink sed systemctl; do
+    command -v "$tool" >/dev/null || die "Missing prerequisite: $tool"
+  done
+  self="$(readlink -f -- "${BASH_SOURCE[0]}")"
+  [[ -r "$self" ]] || die 'Run the installer from a downloaded file.'
+  runtime_dir="$(mktemp -d /var/tmp/ubuntu-bbrv3-runtime.XXXXXX)"
+  trap 'case "$runtime_dir" in /var/tmp/ubuntu-bbrv3-runtime.*) rm -rf -- "$runtime_dir" ;; esac' EXIT
+  # The other actions run the same embedded logic as an installation, copied
+  # out of this file; they download nothing.
+  for part in BBRV3_ENABLE_V1_1:enable-bbrv3.sh BBRV3_CONFIG_V1_1:bbrv3.sysctl.conf \
+    BBRV3_INSTALLER_V1:install-bbrv3.sh; do
+    sed -n "/<<'${part%%:*}'\$/,/^${part%%:*}\$/p" "$self" | sed '1d;$d' > "$runtime_dir/${part#*:}"
+    [[ -s "$runtime_dir/${part#*:}" ]] || die "Cannot read ${part#*:} from $self."
+  done
+
+  manage() {
+    bash "$runtime_dir/install-bbrv3.sh" "$@"
+  }
+
+  # Ask a yes/no question; an empty answer takes the default, y or n.
+  ask() {
+    local reply
+    read -r -p "$1" reply || return 1
+    case "${reply:-$2}" in
+      [Yy]|[Yy][Ee][Ss]) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+
+  pause() {
+    local _
+    read -r -p '按回车返回菜单。' _ || true
+  }
+
+  # Print the latest stable release as "tag kernel-release megabytes", or
+  # nothing when GitHub cannot be reached.
+  latest_release() {
+    curl --fail --location --silent --max-time 15 \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      "https://api.github.com/repos/$repository/releases/latest" 2>/dev/null |
+      python3 -c '
+import json, re, sys
+release = json.load(sys.stdin)
+tag = release.get("tag_name", "")
+pattern = r"ubuntu-26\.04-bbrv3-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+(?:\.[0-9]+)*-p[1-9][0-9]*"
+if release.get("draft") or release.get("prerelease") or re.fullmatch(pattern, tag) is None:
+    sys.exit(1)
+assets = release.get("assets", [])
+images = [a.get("name", "") for a in assets if a.get("name", "").startswith("linux-image-unsigned-")]
+match = re.match(r"linux-image-unsigned-([^_]+)_", images[0]) if len(images) == 1 else None
+if match is None:
+    sys.exit(1)
+print(tag, match.group(1), sum(int(a.get("size", 0)) for a in assets) // 1048576)
+' 2>/dev/null || true
+  }
+
+  menu_install() {
+    local latest="$1" tag='' release='' megabytes='' choice fallback status=0
+    local options=(install)
+    if [[ -n "$latest" ]]; then
+      read -r tag release megabytes <<<"$latest"
+      if [[ "$release" == "$(uname -r)" ]]; then
+        printf '当前运行的已经是最新正式版 %s，不需要安装。\n' "$release"
+        pause
+        return
+      fi
+    fi
+    if fallback="$(manage find-fallback)"; then
+      printf '官方备用内核：%s\n' "$fallback"
+    else
+      printf '\n%s\n%s\n\n' '没有找到可用的官方备用内核。新内核试启动失败时会回到当前内核，' \
+        '但如果当前内核以后也起不来，就只能用服务商的救援系统。'
+      printf '%s\n' '  1) 先安装官方备用内核，再继续（推荐）' '  2) 不装备用内核，继续安装' '  0) 返回菜单'
+      printf '\n'
+      read -r -p '请选择 [0-2]：' choice || return
+      case "$choice" in
+        1)
+          manage add-fallback --yes || {
+            printf '%s\n' '官方备用内核没有装好，安装已取消。'
+            pause
+            return
+          }
+          ;;
+        2) options+=(--allow-no-fallback) ;;
+        *) return ;;
+      esac
+    fi
+    ask "将下载并安装 ${tag:-最新正式版}${megabytes:+（约 $megabytes MB）}，新内核先试启动一次。继续吗？[Y/n] " y ||
+      return
+    bash "$self" "${options[@]}" || status=$?
+    if (( status == 0 )); then
+      if ask '安装完成，新内核会在下次开机时试启动一次。现在重启吗？[Y/n] ' y; then
+        systemctl reboot
+        exit 0
+      fi
+      printf '%s\n' '请稍后自行重启：sudo reboot'
+    else
+      printf '\n%s\n' '安装没有完成，系统没有重启，原因见上面的输出。'
+    fi
+    pause
+  }
+
+  menu_restore() {
+    local status=0
+    manage restore || status=$?
+    if (( status == 0 )); then
+      if ask '现在重启进入官方内核吗？[Y/n] ' y; then
+        systemctl reboot
+        exit 0
+      fi
+      printf '%s\n' '重启后生效：sudo reboot'
+    fi
+    pause
+  }
+
+  run_menu() {
+    local latest choice
+    printf '%s\n' '正在查询最新正式版。'
+    latest="$(latest_release)"
+    while :; do
+      printf '\nUbuntu 26.04 BBRv3 内核管理 · 安装器 v%s\n\n' "$installer_version"
+      manage status --summary || true
+      if [[ -n "$latest" ]]; then
+        printf '最新正式版：%s（%s）\n' "${latest%% *}" "$(cut -d' ' -f2 <<<"$latest")"
+      else
+        printf '%s\n' '最新正式版：查询失败，不影响其他功能'
+      fi
+      printf '\n'
+      printf '%s\n' '  1) 安装或升级到最新正式版' '  2) 检查 BBRv3' '  3) 清理旧内核' \
+        '  4) 安装官方备用内核' '  5) 恢复官方内核并停用 BBRv3' '  0) 退出'
+      printf '\n'
+      read -r -p '请选择 [0-5]：' choice || { printf '\n'; return 0; }
+      case "$choice" in
+        1) menu_install "$latest" ;;
+        2) manage status || true; pause ;;
+        3) manage clean || true; pause ;;
+        4) manage add-fallback || true; pause ;;
+        5) menu_restore ;;
+        0|q|Q) return 0 ;;
+        *) printf '%s\n' '请输入 0 到 5 之间的数字。' ;;
+      esac
+    done
+  }
+
+  case "$action" in
+    status) manage status ;;
+    clean) manage clean "${manage_options[@]}" ;;
+    fallback) manage add-fallback "${manage_options[@]}" ;;
+    restore) manage restore "${manage_options[@]}" ;;
+    menu) run_menu ;;
+  esac
+  exit 0
+fi
 
 if [[ "$requested_tag" != latest ]]; then
   [[ "$requested_tag" =~ ^ubuntu-26\.04-bbrv3-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)*-p[1-9][0-9]*$ ]] ||
@@ -176,7 +374,32 @@ install -D -m 0644 /var/lib/bbrv3-installer/bbrv3.sysctl.conf /etc/sysctl.d/99-b
 sysctl -p /etc/sysctl.d/99-bbrv3.conf
 [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == bbr ]] || exit 1
 [[ "$(sysctl -n net.core.default_qdisc)" == fq ]] || exit 1
-printf '%s\n' 'PASS: BBRv3 enabled; default qdisc=fq (existing interface qdiscs are unchanged).'
+printf '%s\n' 'PASS: BBRv3 enabled; default qdisc=fq.'
+# A link that came up before default_qdisc=fq applied, for example inside an
+# initramfs that starts the network, keeps the kernel's built-in pfifo_fast.
+# Move only those queues to fq; a queue anyone chose stays, and nothing here
+# can fail the verification.
+command -v tc >/dev/null || exit 0
+while read -r device scope parent; do
+  where=("$scope")
+  [[ -z "$parent" ]] || where+=("$parent")
+  if tc qdisc replace dev "$device" "${where[@]}" fq; then
+    printf 'PASS: the %s queue of %s moved from pfifo_fast to fq.\n' "${where[*]}" "$device"
+  else
+    printf 'NOTE: the %s queue of %s stays pfifo_fast.\n' "${where[*]}" "$device"
+  fi
+done < <(tc qdisc show 2>/dev/null | awk '
+  $1 == "qdisc" && $2 == "pfifo_fast" {
+    device = ""
+    where = ""
+    for (i = 3; i <= NF; i++) {
+      if ($i == "dev") device = $(i + 1)
+      else if ($i == "root") where = "root"
+      else if ($i == "parent") where = "parent " $(i + 1)
+    }
+    if (device != "" && where != "") print device, where
+  }')
+exit 0
 BBRV3_ENABLE_V1_1
   cat > .installer-runtime/bbrv3.sysctl.conf <<'BBRV3_CONFIG_V1_1'
 net.core.default_qdisc=fq
@@ -198,6 +421,11 @@ grub_default_config=/etc/default/grub.d/99-bbrv3-installer.cfg
 trial_config=/boot/grub/custom.cfg
 trial_marker='# Temporary BBRv3 trial boot entry; bbrv3-verify removes it.'
 boot_once_state="$state/boot-once"
+# Ubuntu 26.04 builds its initramfs images with dracut. Where an initramfs
+# starts the network, the links come up before default_qdisc=fq applies
+# unless the image carries sch_fq and tcp_bbr.
+dracut_config=/etc/dracut.conf.d/90-bbrv3.conf
+dracut_line='force_drivers+=" sch_fq tcp_bbr "'
 
 # Print the GRUB menu path of a kernel's normal entry, for example
 # gnulinux-advanced-UUID>gnulinux-7.0.0-13402-generic-advanced-UUID.
@@ -248,6 +476,183 @@ remove_trial_entry() {
   fi
 }
 
+boot_files_ready() {
+  local release="$1"
+  [[ -s "/boot/vmlinuz-$release" && -s "/boot/initrd.img-$release" ]] &&
+    grep -Fq -- "vmlinuz-$release" /boot/grub/grub.cfg &&
+    grep -Fq -- "initrd.img-$release" /boot/grub/grub.cfg
+}
+
+# Print one line per installed kernel image: its release, its kind and
+# whether its package is on hold. The kind is bbrv3 for this project's
+# packages, official for Ubuntu's (source linux or linux-signed) and other for
+# anything else. Held packages count as installed.
+kernel_records() {
+  { dpkg-query -W \
+      -f='${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${source:Package}\n' \
+      'linux-image-[0-9]*-generic' 'linux-image-unsigned-[0-9]*-generic' 2>/dev/null || true; } |
+    awk -F '\t' '
+      $1 !~ /^[ih]i/ { next }
+      {
+        release = $2
+        sub(/:.*$/, "", release)
+        sub(/^linux-image-(unsigned-)?/, "", release)
+        if (release in seen) next
+        seen[release] = 1
+        if ($3 ~ /[+]bbrv3[.]/) kind = "bbrv3"
+        else if ($4 == "linux" || $4 == "linux-signed") kind = "official"
+        else kind = "other"
+        print release "\t" kind "\t" (substr($1, 1, 1) == "h" ? "held" : "-")
+      }'
+}
+
+# Print the newest official kernel, other than the release given, whose
+# image, initramfs and GRUB references are all in place.
+find_fallback_release() {
+  local release kind best=''
+  while IFS=$'\t' read -r release kind _; do
+    [[ "$kind" == official && "$release" != "${1:-}" ]] || continue
+    boot_files_ready "$release" || continue
+    best="$release"
+  done < <(kernel_records | sort -t $'\t' -k1,1V)
+  [[ -n "$best" ]] || return 1
+  printf '%s\n' "$best"
+}
+
+# Print GRUB_DEFAULT as update-grub reads it, optionally without this
+# installer's own setting.
+grub_default_value() {
+  local skip="${1:-}"
+  (
+    set +eu
+    GRUB_DEFAULT=0
+    for config in /etc/default/grub /etc/default/grub.d/*.cfg; do
+      [[ -f "$config" && "$config" != "$skip" ]] || continue
+      # shellcheck source=/dev/null
+      . "$config"
+    done
+    printf '%s' "${GRUB_DEFAULT:-0}"
+  )
+}
+
+# Print the kernel GRUB boots by default, or nothing if that cannot be told.
+default_boot_release() {
+  local default saved
+  default="$(grub_default_value)"
+  if [[ "$default" == saved ]]; then
+    saved="$(grub-editenv list 2>/dev/null | sed -n 's/^saved_entry=//p' || true)"
+    if [[ -n "$saved" ]]; then
+      sed -n 's/^.*gnulinux-\([^>]*\)-advanced-[^>]*$/\1/p' <<<"$saved"
+      return 0
+    fi
+  elif [[ "$default" != 0 ]]; then
+    return 0
+  fi
+  # GRUB boots the first entry; print the kernel its linux line loads.
+  awk '
+    /^[[:space:]]*menuentry / { inside = 1 }
+    inside && /^[[:space:]]*linux[[:space:]]/ {
+      for (i = 2; i <= NF; i++)
+        if ($i ~ /vmlinuz-/) { sub(/^.*vmlinuz-/, "", $i); print $i; exit }
+    }' /boot/grub/grub.cfg
+}
+
+pending_trial() {
+  local environment
+  [[ ! -f "$boot_once_state" ]] || return 0
+  environment="$(grub-editenv list 2>/dev/null || true)"
+  grep -q '^next_entry=.' <<<"$environment"
+}
+
+megabytes() {
+  local bytes
+  bytes="$({ du -cbs "$@" 2>/dev/null || true; } | awk 'END { print $1 + 0 }')"
+  printf '%d' $(( bytes / 1048576 ))
+}
+
+# Exercise a real TCP connection with BBR, without sending external traffic.
+bbr_transfer_test() {
+  python3 - <<'PY'
+import socket
+with socket.socket() as listener, socket.socket() as client:
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    client.settimeout(5)
+    client.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'bbr')
+    client.connect(listener.getsockname())
+    with listener.accept()[0] as peer:
+        peer.settimeout(5)
+        client.sendall(b'bbrv3-smoke-test')
+        data = b''
+        while len(data) < 16:
+            chunk = peer.recv(16 - len(data))
+            if not chunk:
+                raise RuntimeError('Unexpected TCP EOF')
+            data += chunk
+        assert data == b'bbrv3-smoke-test'
+        assert client.getsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, 16).rstrip(b'\0') == b'bbr'
+print('PASS: local TCP transfer using bbr (not a throughput or WAN test).')
+PY
+}
+
+# Decide which old BBRv3 kernels can go. Input lines: release, kind and
+# whether its boot files are ready. Output lines: "keep", the release and why,
+# or "remove" and the release. The running and the default kernel stay, and
+# so does a working fallback: an official kernel when there is one, else the
+# newest other BBRv3 kernel.
+clean_plan() {
+  sort -t $'\t' -k1,1V | awk -F '\t' -v running="$1" -v boot_default="$2" '
+    { release[NR] = $1; kind[NR] = $2; ready[NR] = $3 }
+    END {
+      for (i = 1; i <= NR; i++)
+        if (release[i] != running && ready[i] == "yes" &&
+            (kind[i] == "official" || release[i] == boot_default))
+          fallback = 1
+      for (i = NR; i >= 1; i--) {
+        if (kind[i] != "bbrv3") continue
+        if (release[i] == running) print "keep\t" release[i] "\trunning"
+        else if (release[i] == boot_default) print "keep\t" release[i] "\tdefault"
+        else if (!fallback && ready[i] == "yes") {
+          fallback = 1
+          print "keep\t" release[i] "\tfallback"
+        } else print "remove\t" release[i]
+      }
+    }'
+}
+
+# Print the installed BBRv3 packages of one kernel release.
+bbrv3_packages() {
+  { dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Version}\n' 'linux-*' 2>/dev/null || true; } |
+    awk -F '\t' -v release="$1" -v headers="linux-headers-${1%-generic}" '
+      $1 ~ /^.n/ || $3 !~ /[+]bbrv3[.]/ { next }
+      {
+        name = $2
+        sub(/:.*$/, "", name)
+        tail = "-" release
+        if (name == headers ||
+            (length(name) > length(tail) && substr(name, length(name) - length(tail) + 1) == tail))
+          print name
+      }'
+}
+
+# Ask before a change; --yes answers for scripts.
+confirm() {
+  local reply
+  [[ "$assume_yes" != true ]] || return 0
+  [[ -t 0 ]] || die '需要确认：非交互运行时请加 --yes。'
+  read -r -p "$1 [y/N] " reply || reply=''
+  case "$reply" in
+    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+  esac
+  printf '%s\n' '已取消，没有做任何改动。'
+  exit 10
+}
+
+take_lock() {
+  exec 9>/run/lock/bbrv3-installer.lock
+  flock --nonblock 9 || die '另一个 BBRv3 安装或管理操作正在进行。'
+}
+
 if [[ "$mode" == test ]]; then
   expected="$(cat "$state/expected-release")"
   if [[ "$(uname -r)" != "$expected" && -f "$boot_once_state" ]]; then
@@ -275,28 +680,7 @@ if [[ "$mode" == test ]]; then
     die "OpenZFS vermagic does not match $expected: ${zfs_vermagic:-missing}"
   [[ -n "$(cat /sys/module/zfs/version 2>/dev/null || true)" ]] ||
     die 'The matching OpenZFS module did not load.'
-  # Exercise a real TCP connection with BBR, without sending external traffic.
-  python3 - <<'PY'
-import socket
-with socket.socket() as listener, socket.socket() as client:
-    listener.bind(('127.0.0.1', 0))
-    listener.listen(1)
-    client.settimeout(5)
-    client.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, b'bbr')
-    client.connect(listener.getsockname())
-    with listener.accept()[0] as peer:
-        peer.settimeout(5)
-        client.sendall(b'bbrv3-smoke-test')
-        data = b''
-        while len(data) < 16:
-            chunk = peer.recv(16 - len(data))
-            if not chunk:
-                raise RuntimeError('Unexpected TCP EOF')
-            data += chunk
-        assert data == b'bbrv3-smoke-test'
-        assert client.getsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, 16).rstrip(b'\0') == b'bbr'
-print('PASS: local TCP transfer using bbr (not a throughput or WAN test).')
-PY
+  bbr_transfer_test
   printf 'PASS: booted %s and loaded BBRv3 plus matching OpenZFS modules; review journalctl -k -b for kernel warnings.\n' "$expected"
   if [[ -f "$boot_once_state" ]]; then
     # A kernel that boots but loses the network must not become the default.
@@ -309,7 +693,307 @@ PY
   fi
   exit 0
 fi
-[[ "$mode" == install ]] || die 'Usage: install-bbrv3.sh install [--reboot] [--allow-no-fallback] [--no-boot-once] | test'
+
+# Management actions, run from the menu or as install-bbrv3.sh <action>.
+assume_yes=false
+reboot_after=false
+summary_only=false
+case "$mode" in
+  status|find-fallback|add-fallback|clean|restore)
+    shift
+    while (( $# > 0 )); do
+      case "$1:$mode" in
+        --yes:add-fallback|--yes:clean|--yes:restore) assume_yes=true ;;
+        --reboot:restore) reboot_after=true ;;
+        --summary:status) summary_only=true ;;
+        *) die "Unknown option for $mode: $1" ;;
+      esac
+      shift
+    done
+    ;;
+esac
+
+if [[ "$mode" == find-fallback ]]; then
+  find_fallback_release
+  exit 0
+fi
+
+if [[ "$mode" == status ]]; then
+  running="$(uname -r)"
+  running_kind="$(kernel_records | awk -F '\t' -v release="$running" '$1 == release { kind = $2 } END { print kind }')"
+  case "$running_kind" in
+    bbrv3) running_label='本项目的 BBRv3 内核' ;;
+    official) running_label='Ubuntu 官方内核' ;;
+    *) running_label='其他内核' ;;
+  esac
+  congestion="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo 未知)"
+  default_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo 未知)"
+  bbr_version="$(cat /sys/module/tcp_bbr/version 2>/dev/null || true)"
+  default_release="$(default_boot_release || true)"
+  printf '当前内核：%s（%s）\n' "$running" "$running_label"
+  printf '拥塞控制：%s%s，默认队列：%s\n' "$congestion" "${bbr_version:+（BBR 模块版本 $bbr_version）}" "$default_qdisc"
+  printf '默认启动：%s\n' "${default_release:-无法确定}"
+  [[ "$summary_only" != true ]] || exit 0
+
+  if [[ -f /etc/systemd/system/bbrv3-verify.service ]]; then
+    if systemctl is-active --quiet bbrv3-verify.service; then
+      verify='本次开机已通过'
+    elif systemctl is-failed --quiet bbrv3-verify.service; then
+      verify='本次开机没有通过，原因见 journalctl -u bbrv3-verify -b --no-pager'
+    else
+      verify='本次开机还没有运行'
+    fi
+  else
+    verify='没有安装'
+  fi
+  printf '开机验收：%s\n' "$verify"
+  if pending_trial; then
+    printf '试启动：%s 等待下次开机试启动\n' "$(cat "$state/expected-release" 2>/dev/null || echo 新内核)"
+  else
+    printf '%s\n' '试启动：没有待执行的试启动'
+  fi
+  if [[ -f "$dracut_config" ]]; then
+    if [[ "$(cat "$dracut_config")" == "$dracut_line" ]]; then
+      printf 'initramfs 模块：已配置 sch_fq 和 tcp_bbr（%s）\n' "$dracut_config"
+    else
+      printf 'initramfs 模块：%s 的内容与本安装器写入的不同\n' "$dracut_config"
+    fi
+  elif command -v dracut >/dev/null; then
+    printf '%s\n' 'initramfs 模块：没有配置 sch_fq 和 tcp_bbr'
+  fi
+  printf '%s\n' '网卡队列：'
+  queues="$(tc qdisc show 2>/dev/null | awk '
+    $1 != "qdisc" { next }
+    {
+      device = ""
+      root = 0
+      for (i = 3; i <= NF; i++) {
+        if ($i == "dev") device = $(i + 1)
+        if ($i == "root") root = 1
+      }
+      if (device == "" || device == "lo") next
+      if (root) {
+        if (!(device in kind)) order[++count] = device
+        kind[device] = $2
+      } else if (index(" " children[device] " ", " " $2 " ") == 0) {
+        children[device] = children[device] " " $2
+      }
+    }
+    END {
+      for (i = 1; i <= count; i++) {
+        device = order[i]
+        if (kind[device] == "noqueue") continue
+        line = "  " device "：" kind[device]
+        if (device in children) line = line "（子队列：" substr(children[device], 2) "）"
+        print line
+      }
+    }' || true)"
+  printf '%s\n' "${queues:-  没有读到网卡队列}"
+  if [[ "$queues" == *pfifo_fast* && "$running_kind" == bbrv3 ]]; then
+    printf '%s\n' '  pfifo_fast 是网卡比 fq 设置更早启用时留下的，开机验收服务每次开机会把它换成 fq。'
+  fi
+  printf '\n%s\n' '已安装的内核：'
+  while IFS=$'\t' read -r release kind held; do
+    case "$kind" in
+      bbrv3) label='BBRv3' ;;
+      official) label='官方' ;;
+      *) label='其他' ;;
+    esac
+    marks=''
+    [[ "$release" != "$running" ]] || marks+='，正在运行'
+    [[ "$release" != "$default_release" ]] || marks+='，默认启动'
+    [[ "$held" != held ]] || marks+='，已锁定（hold）'
+    boot_files_ready "$release" || marks+='，启动文件不完整'
+    printf '  %s  %s  /boot %s MB，模块 %s MB%s\n' "$release" "$label" \
+      "$(megabytes /boot/{vmlinuz,initrd.img,System.map,config}-"$release")" \
+      "$(megabytes "/usr/lib/modules/$release")" "$marks"
+  done < <(kernel_records | sort -t $'\t' -k1,1Vr)
+  printf '\n'
+  if bbr_transfer_test >/dev/null 2>&1; then
+    printf '%s\n' '自检：本机 TCP 传输使用 bbr 正常（不代表吞吐量或公网表现）'
+  else
+    printf '%s\n' '自检：本机 TCP 传输无法使用 bbr'
+  fi
+  exit 0
+fi
+
+if [[ "$mode" == add-fallback ]]; then
+  if fallback="$(find_fallback_release)"; then
+    printf '已有官方备用内核 %s，不需要再安装。\n' "$fallback"
+    exit 0
+  fi
+  for tool in apt-get apt-cache flock systemd-detect-virt; do
+    command -v "$tool" >/dev/null || die "Missing prerequisite: $tool"
+  done
+  confirm '将安装 Ubuntu 官方内核作为备用内核：虚拟机装 linux-image-virtual，物理机装 linux-image-generic。默认启动项不变。继续吗？'
+  take_lock
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+  apt-get update
+  meta=linux-image-generic
+  # A virtual machine needs none of the firmware that linux-image-generic pulls in.
+  if systemd-detect-virt --vm --quiet; then
+    policy="$(apt-cache policy linux-image-virtual 2>/dev/null || true)"
+    if grep -Eq '^[[:space:]]*Candidate: [0-9]' <<<"$policy"; then meta=linux-image-virtual; fi
+  fi
+  before="$(default_boot_release || true)"
+  apt-get --simulate install "$meta" >/dev/null
+  apt-get --yes install "$meta"
+  fallback="$(find_fallback_release || true)"
+  [[ -n "$fallback" ]] || die "$meta 已安装，但没有找到启动文件完整的官方内核，请检查 /boot 和 GRUB。"
+  after="$(default_boot_release || true)"
+  printf '已安装官方备用内核 %s（%s）。\n' "$fallback" "$meta"
+  if [[ "$after" != "$before" ]]; then
+    printf '注意：默认启动从 %s 变成了 %s。\n' "${before:-无法确定}" "${after:-无法确定}"
+  fi
+  exit 0
+fi
+
+if [[ "$mode" == clean ]]; then
+  for tool in apt-get apt-mark flock grub-editenv update-grub; do
+    command -v "$tool" >/dev/null || die "Missing prerequisite: $tool"
+  done
+  take_lock
+  running="$(uname -r)"
+  default_release="$(default_boot_release || true)"
+  if pending_trial; then
+    die '有一次试启动还没有完成，请先重启完成试启动，再清理旧内核。'
+  fi
+  [[ -n "$default_release" ]] || die '无法确定 GRUB 默认启动的内核，为安全起见不清理。'
+  [[ "$default_release" == "$running" ]] ||
+    die "当前运行的 $running 不是默认启动的 $default_release，请先重启进入默认内核，再清理旧内核。"
+  if [[ "$(cat "$state/expected-release" 2>/dev/null || true)" == "$running" ]] &&
+    systemctl is-failed --quiet bbrv3-verify.service; then
+    die '本次开机验收没有通过，请先查看 journalctl -u bbrv3-verify -b --no-pager，再清理旧内核。'
+  fi
+  removable=()
+  kept=''
+  while IFS=$'\t' read -r verdict release reason; do
+    if [[ "$verdict" == remove ]]; then
+      removable+=("$release")
+    elif [[ "$reason" == fallback ]]; then
+      kept="$release"
+    fi
+  done < <(
+    while IFS=$'\t' read -r release kind _; do
+      ready=no
+      if boot_files_ready "$release"; then ready=yes; fi
+      printf '%s\t%s\t%s\n' "$release" "$kind" "$ready"
+    done < <(kernel_records) | clean_plan "$running" "$default_release"
+  )
+  if (( ${#removable[@]} == 0 )); then
+    if [[ -n "$kept" ]]; then
+      printf '没有可以清理的旧内核：%s 是唯一的备用内核，需要保留。安装官方备用内核后就可以清理它。\n' "$kept"
+    else
+      printf '%s\n' '没有可以清理的旧内核。'
+    fi
+    exit 0
+  fi
+  packages=()
+  for release in "${removable[@]}"; do
+    while IFS= read -r package; do packages+=("$package"); done < <(bbrv3_packages "$release")
+  done
+  (( ${#packages[@]} > 0 )) || die '没有找到这些内核的软件包。'
+  printf '%s\n' '将删除以下旧内核：'
+  printf '  %s\n' "${removable[@]}"
+  printf '%s\n' '涉及的软件包：'
+  printf '  %s\n' "${packages[@]}"
+  if [[ -n "$kept" ]]; then
+    printf '保留 %s 作为备用内核。\n' "$kept"
+  fi
+  confirm '确认删除吗？'
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+  mapfile -t held < <(
+    { dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\n' "${packages[@]}" 2>/dev/null || true; } |
+      awk -F '\t' '$1 ~ /^h/ { name = $2; sub(/:.*$/, "", name); print name }'
+  )
+  rehold() {
+    if (( ${#held[@]} > 0 )); then apt-mark hold "${held[@]}" >/dev/null || true; fi
+  }
+  if (( ${#held[@]} > 0 )); then
+    apt-mark unhold "${held[@]}"
+  fi
+  # Remove exactly these packages and nothing that depends on them.
+  simulation="$(apt-get --simulate --yes purge "${packages[@]}" 2>&1)" ||
+    { rehold; printf '%s\n' "$simulation" >&2; die '删除前的模拟没有通过，没有删除任何软件包。'; }
+  extra="$(awk '$1 == "Purg" || $1 == "Remv" { print $2 }' <<<"$simulation" |
+    grep -Fvx -f <(printf '%s\n' "${packages[@]}") || true)"
+  if [[ -n "$extra" ]]; then
+    rehold
+    die "删除这些内核会连带删除其他软件包，已停止：${extra//$'\n'/ }"
+  fi
+  apt-get --yes purge "${packages[@]}"
+  update-grub
+  boot_files_ready "$running" || die "删除后 $running 的启动文件不完整，请立即检查 /boot 和 GRUB。"
+  printf '已删除：%s\n' "${removable[*]}"
+  exit 0
+fi
+
+if [[ "$mode" == restore ]]; then
+  for tool in flock grub-editenv grub-set-default update-grub; do
+    command -v "$tool" >/dev/null || die "Missing prerequisite: $tool"
+  done
+  take_lock
+  target="$(find_fallback_release || true)"
+  [[ -n "$target" ]] || die '没有可以恢复到的官方内核，请先安装官方备用内核（菜单第 4 项，或运行 fallback）。'
+  configured="$(grub_default_value "$grub_default_config")"
+  if [[ "$configured" != 0 && "$configured" != saved ]]; then
+    die "GRUB_DEFAULT 已被自定义为 $configured，请在 GRUB 配置里自行选择默认内核。"
+  fi
+  leftovers=()
+  for path in /etc/systemd/system/bbrv3-verify.service /etc/sysctl.d/99-bbrv3.conf "$state"; do
+    if [[ -e "$path" ]]; then leftovers+=("$path"); fi
+  done
+  dracut_ours=false
+  if [[ -f "$dracut_config" && "$(cat "$dracut_config")" == "$dracut_line" ]]; then
+    dracut_ours=true
+    leftovers+=("$dracut_config")
+  fi
+  if (( ${#leftovers[@]} == 0 )) && [[ "$(default_boot_release || true)" == "$target" ]]; then
+    printf '默认启动已经是官方内核 %s，也没有 BBRv3 的配置，不需要恢复。\n' "$target"
+    exit 0
+  fi
+  printf '默认启动将改为官方内核 %s。\n' "$target"
+  if (( ${#leftovers[@]} > 0 )); then
+    printf '%s\n' '将删除以下 BBRv3 配置：'
+    printf '  %s\n' "${leftovers[@]}"
+  fi
+  printf '%s\n' 'BBRv3 内核包保留，以后可以用"清理旧内核"删除。'
+  confirm '确认恢复吗？'
+  remove_trial_entry
+  rm -f -- "$boot_once_state"
+  if [[ "$configured" != saved ]]; then
+    install -d /etc/default/grub.d
+    printf '%s\n' \
+      '# Written by the BBRv3 installer when it restored the official kernel.' \
+      '# GRUB boots the saved entry. Delete this file and run update-grub to' \
+      '# boot the first entry again.' \
+      'GRUB_DEFAULT=saved' > "$grub_default_config"
+  fi
+  update-grub
+  entry="$(grub_entry_path "$target")"
+  [[ -n "$entry" ]] || die "GRUB 菜单里没有 $target 的启动项。"
+  grub-editenv - unset next_entry || true
+  grub-set-default "$entry"
+  grub_environment="$(grub-editenv list)"
+  grep -Fxq "saved_entry=$entry" <<<"$grub_environment" ||
+    die 'GRUB 没有记录新的默认启动项，请检查 /boot/grub/grubenv。'
+  if [[ -e /etc/systemd/system/bbrv3-verify.service ]]; then
+    systemctl disable bbrv3-verify.service || true
+    rm -f -- /etc/systemd/system/bbrv3-verify.service
+    systemctl daemon-reload
+  fi
+  rm -f -- /etc/sysctl.d/99-bbrv3.conf
+  if [[ "$dracut_ours" == true ]]; then rm -f -- "$dracut_config"; fi
+  case "$state" in
+    /var/lib/bbrv3-installer) rm -rf -- "$state" ;;
+  esac
+  printf '已恢复：下次开机进入官方内核 %s。现在运行的仍是 %s，重启后生效。\n' "$target" "$(uname -r)"
+  if [[ "$reboot_after" == true ]]; then systemctl reboot; fi
+  exit 0
+fi
+
+[[ "$mode" == install ]] ||
+  die 'Usage: install-bbrv3.sh install [--reboot] [--allow-no-fallback] [--no-boot-once] | test | status | add-fallback | clean | restore'
 allow_no_fallback=false
 reboot_requested=false
 boot_once_requested=true
@@ -403,34 +1087,7 @@ zfs_depends="$(dpkg-deb -f "${package_files[linux-main-modules-zfs-$expected]}" 
 grep -Fq "linux-image-$expected | linux-image-unsigned-$expected" <<<"$zfs_depends" ||
   die 'The OpenZFS package does not require the matching kernel image.'
 
-boot_files_ready() {
-  local release="$1"
-  [[ -s "/boot/vmlinuz-$release" && -s "/boot/initrd.img-$release" ]] &&
-    grep -Fq -- "vmlinuz-$release" /boot/grub/grub.cfg &&
-    grep -Fq -- "initrd.img-$release" /boot/grub/grub.cfg
-}
-fallback_release=''
-mapfile -t installed_images < <(
-  dpkg-query -W \
-    -f='${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${source:Package}\n' \
-    'linux-image-[0-9]*-generic' 'linux-image-unsigned-[0-9]*-generic' 2>/dev/null || true
-)
-for image_record in "${installed_images[@]}"; do
-  IFS=$'\t' read -r image_status image_package image_version image_source <<<"$image_record"
-  [[ "$image_status" == ii* ]] || continue
-  image_package="${image_package%%:*}"
-  [[ "$image_version" != *+bbrv3.* ]] || continue
-  [[ "$image_source" == linux || "$image_source" == linux-signed ]] || continue
-  case "$image_package" in
-    linux-image-unsigned-*) candidate_release="${image_package#linux-image-unsigned-}" ;;
-    linux-image-*) candidate_release="${image_package#linux-image-}" ;;
-    *) continue ;;
-  esac
-  [[ "$candidate_release" != "$expected" ]] || continue
-  boot_files_ready "$candidate_release" || continue
-  fallback_release="$candidate_release"
-  break
-done
+fallback_release="$(find_fallback_release "$expected" || true)"
 if [[ -z "$fallback_release" ]]; then
   [[ "$allow_no_fallback" == true ]] ||
     die 'No fully installed Canonical fallback kernel was found. First run: apt-get update && apt-get install linux-image-generic'
@@ -516,6 +1173,16 @@ for path, required in requirements.values():
 print('PASS: conservative installation disk-space preflight')
 SPACE_CHECK
 apt-get --simulate --no-remove install "${packages[@]}"
+# Let initramfs images built from now on, starting with the new kernel's,
+# carry sch_fq and tcp_bbr.
+if [[ -d /etc/dracut.conf.d ]] || command -v dracut >/dev/null; then
+  if [[ ! -e "$dracut_config" ]]; then
+    install -d /etc/dracut.conf.d
+    printf '%s\n' "$dracut_line" > "$dracut_config"
+  elif [[ "$(cat "$dracut_config")" != "$dracut_line" ]]; then
+    printf 'NOTE: %s has other content and is left unchanged.\n' "$dracut_config"
+  fi
+fi
 apt-get --yes --no-remove install "${packages[@]}"
 apt-get check
 post_install_audit="$(dpkg --audit 2>&1 || true)"
