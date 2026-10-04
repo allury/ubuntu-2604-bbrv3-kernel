@@ -51,7 +51,7 @@ curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/insta
 sudo bash install-bbrv3.sh --allow-no-fallback --reboot
 ```
 
-建议执行前阅读下载的脚本。去掉 `--reboot` 可在安装完成后自行重启。追加 `--no-boot-once` 可关闭试启动。要固定安装 p2，追加 `--tag ubuntu-26.04-bbrv3-7.0.0-30.30-p2`。已运行目标内核时无需重复安装。
+建议执行前阅读下载的脚本。去掉 `--reboot` 可在安装完成后自行重启。追加 `--no-boot-once` 可关闭试启动。要固定安装 p2，追加 `--tag ubuntu-26.04-bbrv3-7.0.0-30.30-p2`。已运行目标内核时无需重复安装。与他人共用出口 IP 时（例如部分 NAT VPS），GitHub 可能限制匿名查询，可以设置令牌后运行：`sudo GITHUB_TOKEN=<令牌> bash install-bbrv3.sh`。
 
 ## 重启后检查
 
@@ -97,7 +97,7 @@ v1.2.0 起新内核先只试启动一次。安装器把当前运行的内核保�
 
 以下情况不做试启动并在安装时说明原因，行为同 v1.1.0，即新内核因版本号靠前直接成为默认启动项：`/boot/grub` 位于 btrfs、ZFS、LVM、软 RAID 等 GRUB 无法写入的位置；`GRUB_DEFAULT` 已被自定义；使用了 `--no-boot-once`。要恢复按菜单顺序启动，删除上述配置文件后运行 `sudo update-grub`。用 v1.2.0 安装过后，后续升级也请使用 v1.2.0 或更新的安装器，旧安装器不会移动 GRUB 保存的默认启动项。详见 [更新记录](installer/CHANGELOG.md)。
 
-安装器改动和每个新内核都会在 BIOS 引导的 Ubuntu 26.04 云镜像虚拟机中完成安装与重启验收；安装器改动还会验证试启动失败后无人干预地回到原内核。这仍不等同于 UEFI、PV-GRUB 等所有服务商引导配置下的端到端验证。
+安装器改动和每个新内核都会在 BIOS 引导的 Ubuntu 26.04 云镜像虚拟机中完成安装与重启验收。安装器改动还会验证：试启动失败后无人干预地回到原内核；用恢复功能回到官方内核；在 UEFI 引导、只有旧版 BBRv3 内核的虚拟机里，通过菜单升级、安装官方备用内核并清理旧内核。这仍不等同于所有服务商引导配置（例如 PV-GRUB）下的端到端验证。
 
 ## 源码与信任边界
 

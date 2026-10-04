@@ -10,7 +10,7 @@
 | `.github/workflows/installer-release.yml` | 推送 `installer-v*` 标签后，待该提交的安装器检查和虚拟机验收通过，按更新记录创建安装器 Release，不设为 Latest |
 | `.github/workflows/network-report.yml` | 手动或修改测量代码时运行：在云镜像虚拟机中通过模拟瓶颈链路，比较官方内核的 CUBIC、BBRv1 与最新正式内核的 CUBIC、BBRv3，生成中文报告；只供参考，不是发布门槛。每次发布新内核时，构建流程会用同一套测量自动生成报告 |
 | `.github/workflows/repo-checks.yml` | 修改脚本、测试、补丁或工作流时运行，不编译内核：ShellCheck、工作流解析、补丁批准哈希、脚本行为测试、对当前 Ubuntu 发布源的补丁应用与变化报告，以及用最新正式内核执行 QEMU 冒烟 |
-| `.github/workflows/vm-acceptance.yml` | 修改安装器或虚拟机测试时运行：用安装器的安装逻辑把最新正式内核装进 Ubuntu 26.04 云镜像虚拟机，分三个场景验证：试启动通过后成为默认，并在新内核上运行检查、清理子命令和 `pfifo_fast` 队列更换；试启动崩溃后自动回到原内核；试启动通过后用恢复子命令回到官方内核。发布流程在发布新内核前运行第一个场景 |
+| `.github/workflows/vm-acceptance.yml` | 修改安装器或虚拟机测试时运行：用安装器的安装逻辑把最新正式内核装进 Ubuntu 26.04 云镜像虚拟机，分四个场景验证：试启动通过后成为默认，并在新内核上运行检查、清理子命令和 `pfifo_fast` 队列更换；试启动崩溃后自动回到原内核；试启动通过后用恢复子命令回到官方内核；在 UEFI 引导、只剩上一个正式版 BBRv3 内核（hold）的虚拟机里，用伪终端操作菜单，从 GitHub 升级到最新正式版、安装官方备用内核并清理旧内核。发布流程在发布新内核前运行第一个场景 |
 | `installer/install.sh` | 用户安装入口，按独立版本标签发布 |
 | `scripts/` | 构建、校验、恢复工具及内核 Release 随附的基线安装脚本 |
 | `config/` | 内核附件的基线配置；独立安装器内嵌自己的配置 |
@@ -27,10 +27,10 @@
 - [正式版完整验收记录](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/33967676484)：构建、真实包安装、外部模块编译、QEMU 内核启动、BBRv3 TCP 传输及 ZFS 加载。
 - [安装器 v1.1.0 验收记录](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/34460015729)：静态检查、参数传递、回退保护、引导文件检查、磁盘预算和解析器测试。
 - 安装器 v1.2.0 验收记录（安装逻辑提交 `a2e40eb`）：[安装器检查](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/35980795982)，覆盖以上各项及试启动参数、菜单项解析、前提条件判断；[虚拟机验收](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/35980796103)，覆盖试启动通过后成为默认，以及试启动崩溃后自动回到原内核。
-- 安装器 v1.3.0 验收记录（安装逻辑提交 `a836467`）：[安装器检查](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/37175372907)，覆盖以上各项及菜单与子命令参数、内置脚本提取、备用内核识别、清理旧内核的保留规则、默认启动项解析和 `pfifo_fast` 更换，并对内置脚本运行 ShellCheck；[虚拟机验收](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/37175372879)，覆盖安装（含检查、清理子命令和队列更换）、试启动崩溃后回到原内核、恢复官方内核三个场景。
+- 安装器 v1.3.0 验收记录（安装逻辑提交 `0faff76`）：[安装器检查](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/37200532053)，覆盖以上各项及菜单与子命令参数、内置脚本提取、备用内核识别、清理旧内核的保留规则、默认启动项解析、`pfifo_fast` 更换、Secure Boot 状态判断和 `GITHUB_TOKEN`，并对内置脚本运行 ShellCheck；[虚拟机验收](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/37200532039)，覆盖安装（含检查、清理子命令和队列更换）、试启动崩溃后回到原内核、恢复官方内核，以及 UEFI 下通过菜单从旧版 BBRv3 升级、安装官方备用内核并清理旧内核，共四个场景。
 - 上述内核是历史基线，不是最新版本声明。最新正式内核见 [发布页](https://github.com/allury/ubuntu-2604-bbrv3-kernel/releases/latest)，安装器变更见 [更新记录](../installer/CHANGELOG.md)。
 
-安装器分支测试不等于在所有 VPS 上完成安装与重启验证。虚拟机验收只覆盖 BIOS 引导的 Ubuntu 26.04 云镜像；它和 QEMU 冒烟都不保证所有硬件、服务商引导配置和第三方模块均兼容。
+安装器分支测试不等于在所有 VPS 上完成安装与重启验证。虚拟机验收覆盖 BIOS 引导和 UEFI 引导（不支持 Secure Boot 的 OVMF）的 Ubuntu 26.04 云镜像；它和 QEMU 冒烟都不保证所有硬件、服务商引导配置和第三方模块均兼容。
 
 ## 安装器更新
 
