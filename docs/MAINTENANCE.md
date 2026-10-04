@@ -10,7 +10,7 @@
 | `.github/workflows/installer-release.yml` | 推送 `installer-v*` 标签后，待该提交的安装器检查和虚拟机验收通过，按更新记录创建安装器 Release，不设为 Latest |
 | `.github/workflows/network-report.yml` | 手动或修改测量代码时运行：在云镜像虚拟机中通过模拟瓶颈链路，比较官方内核的 CUBIC、BBRv1 与最新正式内核的 CUBIC、BBRv3，生成中文报告；只供参考，不是发布门槛。每次发布新内核时，构建流程会用同一套测量自动生成报告 |
 | `.github/workflows/repo-checks.yml` | 修改脚本、测试、补丁或工作流时运行，不编译内核：ShellCheck、工作流解析、补丁批准哈希、脚本行为测试、对当前 Ubuntu 发布源的补丁应用与变化报告，以及用最新正式内核执行 QEMU 冒烟 |
-| `.github/workflows/vm-acceptance.yml` | 修改安装器或虚拟机测试时运行：用安装器的安装逻辑把最新正式内核装进 Ubuntu 26.04 云镜像虚拟机，分别验证试启动通过后成为默认，以及试启动崩溃后自动回到原内核。发布流程在发布新内核前运行前一个场景 |
+| `.github/workflows/vm-acceptance.yml` | 修改安装器或虚拟机测试时运行：用安装器的安装逻辑把最新正式内核装进 Ubuntu 26.04 云镜像虚拟机，分三个场景验证：试启动通过后成为默认，并在新内核上运行检查、清理子命令和 `pfifo_fast` 队列更换；试启动崩溃后自动回到原内核；试启动通过后用恢复子命令回到官方内核。发布流程在发布新内核前运行第一个场景 |
 | `installer/install.sh` | 用户安装入口，按独立版本标签发布 |
 | `scripts/` | 构建、校验、恢复工具及内核 Release 随附的基线安装脚本 |
 | `config/` | 内核附件的基线配置；独立安装器内嵌自己的配置 |
@@ -27,6 +27,7 @@
 - [正式版完整验收记录](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/33967676484)：构建、真实包安装、外部模块编译、QEMU 内核启动、BBRv3 TCP 传输及 ZFS 加载。
 - [安装器 v1.1.0 验收记录](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/34460015729)：静态检查、参数传递、回退保护、引导文件检查、磁盘预算和解析器测试。
 - 安装器 v1.2.0 验收记录（安装逻辑提交 `a2e40eb`）：[安装器检查](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/35980795982)，覆盖以上各项及试启动参数、菜单项解析、前提条件判断；[虚拟机验收](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/35980796103)，覆盖试启动通过后成为默认，以及试启动崩溃后自动回到原内核。
+- 安装器 v1.3.0 验收记录（安装逻辑提交 `a836467`）：[安装器检查](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/37175372907)，覆盖以上各项及菜单与子命令参数、内置脚本提取、备用内核识别、清理旧内核的保留规则、默认启动项解析和 `pfifo_fast` 更换，并对内置脚本运行 ShellCheck；[虚拟机验收](https://github.com/allury/ubuntu-2604-bbrv3-kernel/actions/runs/37175372879)，覆盖安装（含检查、清理子命令和队列更换）、试启动崩溃后回到原内核、恢复官方内核三个场景。
 - 上述内核是历史基线，不是最新版本声明。最新正式内核见 [发布页](https://github.com/allury/ubuntu-2604-bbrv3-kernel/releases/latest)，安装器变更见 [更新记录](../installer/CHANGELOG.md)。
 
 安装器分支测试不等于在所有 VPS 上完成安装与重启验证。虚拟机验收只覆盖 BIOS 引导的 Ubuntu 26.04 云镜像；它和 QEMU 冒烟都不保证所有硬件、服务商引导配置和第三方模块均兼容。
@@ -36,7 +37,8 @@
 1. 修改独立入口及对应测试，不为安装器改动重编译内核。
 2. 通过安装器 CI 与虚拟机验收（修改 `installer/` 时自动运行），其中试启动崩溃后自动回到原内核的场景必须通过。虚拟机验收不能代替真实 VPS。v1.2.0 有一次真实 VPS 记录（2026-09-28）：KVM、UEFI 引导，机器上只有本项目的 31.31-p2 内核，没有官方内核，用 `--allow-no-fallback` 升级到 34.34-p2；试启动通过后新内核成为默认，没有残留一次性启动项。v1.1.0 没有真实 VPS 记录。
    修改试启动逻辑时，须保持以下行为：GRUB 无法清除一次性启动项的环境不做试启动；失败的试启动不留下待执行的启动项；只有开机验收可以把新内核设为默认启动项。
-3. 在 `installer/install.sh` 首行注释和 `installer/CHANGELOG.md` 中写明新版本号，并把 README 的两种安装命令改为引用同一新标签。
+   修改菜单或管理子命令时，须保持以下行为：带参数或不在终端里运行时与 v1.2.0 行为一致；清理旧内核不删除正在运行和默认启动的内核，并始终留下一个能启动的备用内核；恢复官方内核不删除内核包，只删除内容与本安装器写入一致的 dracut 配置；更换网卡队列只处理 `pfifo_fast`，且失败不影响验收。
+3. 在 `installer/install.sh` 首行注释和 `installer/CHANGELOG.md` 中写明新版本号，并把 README 中所有安装命令改为引用同一新标签。
 4. 在同一次推送中把 `main` 和新的 `installer-vX.Y.Z` 标签推送到同一提交（`git push --atomic`），避免 README 引用尚不存在的标签；不移动已有标签。
 5. 标签推送后，`installer-release.yml` 会等该提交的安装器检查和虚拟机验收通过，再用更新记录中该版本的条目创建中文 Release，并且不设为 Latest，以免干扰 `/releases/latest` 选择正式内核。已存在的 Release 不会被修改，旧标签和内核附件也不会被改动。
 

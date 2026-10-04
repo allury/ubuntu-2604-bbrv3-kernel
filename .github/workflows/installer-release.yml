@@ -115,11 +115,13 @@ jobs:
           fence='```'
           {
             printf '## 更新内容\n\n%s\n\n' "$changes"
-            printf '## 安装\n\n标准安装（保留官方回退内核）：\n\n'
-            printf '%sbash\ncurl -fL %s -o install-bbrv3.sh &&\nsudo bash install-bbrv3.sh --reboot\n%s\n\n' "$fence" "$installer_url" "$fence"
+            printf '## 安装\n\n下载后直接运行，进入菜单：\n\n'
+            printf '%sbash\ncurl -fL %s -o install-bbrv3.sh &&\nsudo bash install-bbrv3.sh\n%s\n\n' "$fence" "$installer_url" "$fence"
+            printf '无人值守，一条命令装完并重启（要求已有官方回退内核）：\n\n'
+            printf '%sbash\nsudo bash install-bbrv3.sh --reboot\n%s\n\n' "$fence" "$fence"
             printf '接受无官方回退内核的风险后使用：\n\n'
-            printf '%sbash\ncurl -fL %s -o install-bbrv3.sh &&\nsudo bash install-bbrv3.sh --allow-no-fallback --reboot\n%s\n\n' "$fence" "$installer_url" "$fence"
-            printf '%s\n\n' '去掉 `--reboot` 可自行重启；追加 `--tag <内核发布标签>` 可指定内核，全部参数见 `sudo bash install-bbrv3.sh --help`。默认安装最新正式内核，不是本安装器标签。'
+            printf '%sbash\nsudo bash install-bbrv3.sh --allow-no-fallback --reboot\n%s\n\n' "$fence" "$fence"
+            printf '%s\n\n' '去掉 `--reboot` 可自行重启；追加 `--tag <内核发布标签>` 可指定内核，全部用法见 `sudo bash install-bbrv3.sh --help`。默认安装最新正式内核，不是本安装器标签。'
             printf '## 验证与限制\n\n'
             printf '[独立安装器检查](%s)与[虚拟机验收](%s)已在本标签对应的提交上通过。\n\n' "$INSTALLER_RUN" "$VM_RUN"
             if [[ -n "$limits" ]]; then

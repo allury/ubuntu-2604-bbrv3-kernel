@@ -12,14 +12,33 @@
 
 要求 Ubuntu 26.04、amd64、systemd 与 GRUB，适用于物理机和可更换内核的全虚拟化 VPS，不适用于共享宿主机内核的容器。需安装 curl、python3；启用 Secure Boot 的机器不能直接使用这些未签名内核镜像。
 
-以下两种方式使用同一个固定版本的独立安装器，默认下载最新正式内核。安装成功后会重启，请先备份并确认服务商救援控制台可用。安装器保留已有内核，新内核先只试启动一次：起不来会自动回到原内核，开机验收通过后才成为默认启动项；不能试启动的情况见[独立安装器](#独立安装器)。
+以下几种方式使用同一个固定版本的独立安装器，默认下载最新正式内核。安装前请先备份，并确认服务商的救援控制台可用。安装器保留已有内核，新内核先只试启动一次：起不来会自动回到原内核，开机验收通过后才成为默认启动项；不能试启动的情况见[独立安装器](#独立安装器)。
 
-### 标准安装（推荐）
-
-要求已安装官方回退内核；缺失时先运行 `sudo apt-get update && sudo apt-get install linux-image-generic`。
+### 菜单安装（推荐）
 
 ```bash
-curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.2.0/installer/install.sh -o install-bbrv3.sh &&
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.3.0/installer/install.sh -o install-bbrv3.sh &&
+sudo bash install-bbrv3.sh
+```
+
+运行后显示菜单：
+
+| 菜单项 | 作用 |
+| --- | --- |
+| 1 安装或升级到最新正式版 | 下载、校验并安装，新内核先试启动一次，装完询问是否重启。没有官方备用内核时，可以选择先装备用内核 |
+| 2 检查 BBRv3 | 显示内核、BBR 版本、拥塞控制、网卡队列、开机验收结果、默认启动项和已装内核，并做一次本机传输自检，不改动系统 |
+| 3 清理旧内核 | 删除本项目的旧 BBRv3 内核；正在运行和默认启动的内核不删，并始终保留一个能启动的备用内核 |
+| 4 安装官方备用内核 | 安装 Ubuntu 官方内核作为备用，默认启动项不变 |
+| 5 恢复官方内核并停用 BBRv3 | 默认启动改回官方内核，删除 BBRv3 的配置；BBRv3 内核包保留，可再用第 3 项删除 |
+
+每一项也能直接运行：`sudo bash install-bbrv3.sh status`、`clean`、`fallback`、`restore`，加 `--yes` 可跳过确认。
+
+### 无人值守安装
+
+不进入菜单，一条命令装完并重启，适合脚本和批量部署。要求已安装官方回退内核；缺失时先运行 `sudo bash install-bbrv3.sh fallback --yes`。
+
+```bash
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.3.0/installer/install.sh -o install-bbrv3.sh &&
 sudo bash install-bbrv3.sh --reboot
 ```
 
@@ -28,7 +47,7 @@ sudo bash install-bbrv3.sh --reboot
 仅在接受风险后使用。此参数只跳过官方回退内核存在性检查，不跳过校验和、依赖、系统环境和 Secure Boot 检查。没有可用回退内核时，启动失败可能需要救援控制台恢复。
 
 ```bash
-curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.2.0/installer/install.sh -o install-bbrv3.sh &&
+curl -fL https://raw.githubusercontent.com/allury/ubuntu-2604-bbrv3-kernel/installer-v1.3.0/installer/install.sh -o install-bbrv3.sh &&
 sudo bash install-bbrv3.sh --allow-no-fallback --reboot
 ```
 
@@ -45,7 +64,7 @@ journalctl -u bbrv3-verify -b --no-pager
 sudo bash /var/lib/bbrv3-installer/install-bbrv3.sh test
 ```
 
-预期内核以所选发布页为准。例如 `7.0.0-30.30-p2` 对应 `7.0.0-13002-generic`；不同源码版本的 p2 并非同一内核。试启动通过后，验收日志会注明新内核已成为默认启动项。
+预期内核以所选发布页为准。例如 `7.0.0-30.30-p2` 对应 `7.0.0-13002-generic`；不同源码版本的 p2 并非同一内核。试启动通过后，验收日志会注明新内核已成为默认启动项。也可以运行 `sudo bash install-bbrv3.sh status`（菜单第 2 项）查看完整状态。
 
 试启动时新内核若崩溃或挂不上根分区，会在 10 秒后自动重启回原内核，回到原内核的那次开机，验收日志会说明试启动未通过；若新内核卡住不动，在服务商面板重启一次即可回到原内核。未启用试启动时，启动失败需在 GRUB 菜单选择保留的原装内核；无回退内核则使用服务商救援环境。不要在新版本验收前删除旧内核。
 
@@ -66,7 +85,11 @@ sudo bash /var/lib/bbrv3-installer/install-bbrv3.sh test
 
 ## 独立安装器
 
-`installer/install.sh` 从稳定 p2 安装逻辑派生，支持显式 `--allow-no-fallback` 和 `--no-boot-once`。当前固定标签为 `installer-v1.2.0`，旧版 `installer-v1.1.0`、`installer-v1.0.0` 保留；更新安装器不需要编译内核，也不修改已发布内核包或附带脚本。
+`installer/install.sh` 从稳定 p2 安装逻辑派生，支持显式 `--allow-no-fallback` 和 `--no-boot-once`。当前固定标签为 `installer-v1.3.0`，旧版 `installer-v1.2.0`、`installer-v1.1.0`、`installer-v1.0.0` 保留；更新安装器不需要编译内核，也不修改已发布内核包或附带脚本。
+
+v1.3.0 起，在终端里不带参数运行时显示菜单，菜单各项的行为见[菜单安装](#菜单安装推荐)。带参数运行或不在终端里运行时，行为与 v1.2.0 相同。
+
+网卡队列：开机验收服务每次开机时，把仍在使用内核自带默认队列 `pfifo_fast` 的网卡队列换成 `fq`，只处理 `pfifo_fast`，你自己设置的其他队列不动。使用 dracut 的系统还会写入 `/etc/dracut.conf.d/90-bbrv3.conf`，让以后生成的 initramfs 包含 `sch_fq` 和 `tcp_bbr`。这是因为部分机器在 initramfs 阶段就启用网络，那时 `fq` 的设置还没生效，网卡会停留在 `pfifo_fast`。
 
 安装器下载同一内核 Release 的文件，完整验证 `SHA256SUMS`，再运行自身附带的安装逻辑、BBR 启用脚本和配置。不执行内核附件中的安装脚本，也不从可变的 `main` 下载运行组件。历史附件仍保留以兼容旧安装器。
 
