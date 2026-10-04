@@ -10,16 +10,23 @@
 #             an emulated bottleneck on the image's kernel before the
 #             installation and on the new kernel after it;
 #   restore   as install, then the installer's restore action returns the
-#             VM to the official kernel it first booted, with BBRv3 off.
+#             VM to the official kernel it first booted, with BBRv3 off;
+#   menu      the installer itself installs an earlier release from GitHub.
+#             The VM is then made to look like a server that only has
+#             BBRv3 kernels, the old one on hold. The installer menu,
+#             driven in a pseudo-terminal, adds an official fallback,
+#             upgrades to the latest release and, after the trial,
+#             cleans the old kernel away.
 # On the next boot that reaches userspace, a oneshot unit reports the result
-# to the serial console and powers off. The restore scenario reports once
-# more, after the boot that follows the restore.
+# to the serial console and powers off. The restore and menu scenarios
+# report once more, after the boot that follows their last step.
 set -Eeuo pipefail
 
-usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback|network|restore>'
+usage='Usage: vm-guest-install.sh <base-url> <kernel-release> <install|fallback|network|restore|menu> [earlier-release-tag]'
 base_url="${1:?$usage}"
 kernel_release="${2:?$usage}"
 scenario="${3:?$usage}"
+earlier_tag="${4:-}"
 release_dir=/var/tmp/bbrv3-release
 acceptance_dir=/var/lib/bbrv3-acceptance
 started="$acceptance_dir/started"
@@ -69,6 +76,10 @@ phase() {
 [[ ! -e "$started" ]] || exit 0
 case "$scenario" in
   install|fallback|network|restore) ;;
+  menu)
+    [[ "$earlier_tag" =~ ^ubuntu-26\.04-bbrv3-[0-9.]+-[0-9.]+-p[1-9][0-9]*$ ]] ||
+      fail "the menu scenario needs an earlier release tag, got '$earlier_tag'"
+    ;;
   *) fail "unknown scenario: $scenario" ;;
 esac
 mkdir -p "$acceptance_dir"
@@ -129,6 +140,12 @@ sha256sum --check --strict --quiet SHA256SUMS
 compgen -G "linux-image-unsigned-${kernel_release}_*.deb" > /dev/null ||
   fail "the release does not contain linux-image-unsigned-$kernel_release"
 phase 'release downloaded and verified'
+
+if [[ "$scenario" == menu ]]; then
+  install -d /usr/local/lib/bbrv3-acceptance
+  curl -fsS "$base_url/vm-menu-driver.py" -o /usr/local/lib/bbrv3-acceptance/menu-driver.py
+  [[ -d /sys/firmware/efi ]] || fail 'the menu scenario should boot through UEFI'
+fi
 
 if [[ "$scenario" == network ]]; then
   install -d /usr/local/lib/bbrv3-acceptance
@@ -217,6 +234,88 @@ case "$scenario" in
       fi
     fi
     ;;
+  menu)
+    driver=(python3 /usr/local/lib/bbrv3-acceptance/menu-driver.py /var/log/bbrv3-acceptance-menu.log
+      /root/bbrv3-installer.sh)
+    installed() {
+      [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" == [ih]i* ]]
+    }
+    if [[ ! -e "$acceptance/menu-upgraded" ]]; then
+      # The earlier release came up through its trial.
+      trial_checks
+      if (( ${#problems[@]} == 0 )); then
+        earlier="$expected"
+        printf '%s\n' "$earlier" > "$acceptance/earlier-release"
+        # Make the VM look like a server with nothing but BBRv3 kernels: no
+        # official kernel, the old image on hold, and the sysctl and dracut
+        # files people add by hand.
+        purge=()
+        for package in linux-virtual linux-image-virtual linux-generic linux-image-generic; do
+          if installed "$package"; then purge+=("$package"); fi
+        done
+        while IFS=$'\t' read -r status package version; do
+          [[ "$status" == ii* && "$version" != *+bbrv3.* ]] || continue
+          release="${package#linux-image-}"
+          for name in "$package" "linux-modules-$release" "linux-modules-extra-$release"; do
+            if installed "$name"; then purge+=("$name"); fi
+          done
+        done < <(dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Version}\n' \
+          'linux-image-[0-9]*-generic' 2>/dev/null)
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get purge --yes "${purge[@]}" >> "$actions" 2>&1 ||
+          problems+=('could not remove the official kernels')
+        apt-mark hold "linux-image-unsigned-$earlier" >> "$actions" 2>&1 || problems+=('could not hold the old kernel')
+        printf '%s\n' 'net.core.default_qdisc = fq' 'net.ipv4.tcp_congestion_control = bbr' > /etc/sysctl.d/99-bbr.conf
+        install -d /etc/dracut.conf.d
+        printf '%s\n' 'force_drivers+=" sch_fq tcp_bbr "' > /etc/dracut.conf.d/90-bbrv3.conf
+      fi
+      if (( ${#problems[@]} == 0 )); then
+        touch "$acceptance/menu-upgraded"
+        # Upgrade through the menu without an official kernel, as on the
+        # server this was first seen on: check, then install and reboot.
+        if "${driver[@]}" \
+          "expect:180:当前内核：$earlier（本项目的 BBRv3 内核）" \
+          'expect:60:最新正式版：ubuntu-26\.04-bbrv3-' \
+          'expect:30:请选择 \[0-5\]' 'send:2' \
+          'expect:120:BBR 模块版本 3' 'expect:120:自检：本机 TCP 传输使用 bbr 正常' \
+          'expect:30:按回车返回菜单' 'send:' \
+          'expect:60:请选择 \[0-5\]' 'send:1' \
+          'expect:60:没有找到可用的官方备用内核' 'expect:30:请选择 \[0-2\]' 'send:2' \
+          'expect:60:继续吗？\[Y/n\]' 'send:' \
+          'expect:2400:现在重启吗？\[Y/n\]' 'send:' >> "$actions" 2>&1; then
+          exit 0
+        fi
+        problems+=("the menu upgrade did not finish: $(tail -n 1 "$actions")")
+      fi
+    else
+      earlier="$(cat "$acceptance/earlier-release")"
+      trial_checks
+      if (( ${#problems[@]} == 0 )); then
+        # The old kernel is the only fallback until an official one is
+        # added; then it can go, hold and all.
+        "${driver[@]}" \
+          "expect:180:当前内核：$expected（本项目的 BBRv3 内核）" \
+          'expect:30:请选择 \[0-5\]' 'send:3' \
+          "expect:120:$earlier 是唯一的备用内核" 'expect:30:按回车返回菜单' 'send:' \
+          'expect:60:请选择 \[0-5\]' 'send:4' \
+          'expect:60:继续吗？ \[y/N\]' 'send:y' \
+          'expect:1200:已安装官方备用内核' 'expect:30:按回车返回菜单' 'send:' \
+          'expect:60:请选择 \[0-5\]' 'send:3' \
+          'expect:120:将删除以下旧内核' "expect:30:$earlier" \
+          'expect:60:确认删除吗？ \[y/N\]' 'send:y' \
+          "expect:900:已删除：$earlier" 'expect:30:按回车返回菜单' 'send:' \
+          'expect:60:请选择 \[0-5\]' 'send:0' >> "$actions" 2>&1 ||
+          problems+=("the menu run after the upgrade failed: $(tail -n 1 "$actions")")
+        ! installed "linux-image-unsigned-$earlier" || problems+=("$earlier is still installed")
+        installed linux-image-virtual || problems+=('no official fallback kernel was installed')
+        [[ -d /sys/firmware/efi ]] || problems+=('the VM did not boot through UEFI')
+        [[ "$(cat /etc/dracut.conf.d/90-bbrv3.conf)" == 'force_drivers+=" sch_fq tcp_bbr "' ]] ||
+          problems+=('the hand-made dracut file changed')
+        [[ "$(cat /etc/sysctl.d/99-bbr.conf)" == $'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr' ]] ||
+          problems+=('the hand-made sysctl file changed')
+        ! tc qdisc show | grep -q '^qdisc pfifo_fast' || problems+=('a pfifo_fast queue is left')
+      fi
+    fi
+    ;;
   restore)
     if [[ ! -e "$acceptance/restored" ]]; then
       trial_checks
@@ -251,7 +350,7 @@ case "$scenario" in
 esac
 {
   echo '--- installer actions ---'
-  cat "$actions" 2>/dev/null
+  tail -n 150 "$actions" 2>/dev/null
   echo '--- queues ---'
   tc qdisc show
   echo '--- bbrv3-verify.service ---'
@@ -299,7 +398,12 @@ systemctl enable bbrv3-acceptance-report.service
 
 apt-get update
 console "VM_INSTALL_READY: $(date -u +%H:%M:%S)"
-if [[ "$scenario" != fallback ]]; then
+if [[ "$scenario" == menu ]]; then
+  # The installer itself installs the earlier release from GitHub, as on a
+  # server. Without a terminal it installs instead of showing the menu.
+  bash /root/bbrv3-installer.sh install --tag "$earlier_tag" --reboot
+  phase "installer finished; rebooting into the trial of $earlier_tag"
+elif [[ "$scenario" != fallback ]]; then
   bash .installer-runtime/install-bbrv3.sh install --reboot
   phase 'installer finished; rebooting into the trial of the new kernel'
 else

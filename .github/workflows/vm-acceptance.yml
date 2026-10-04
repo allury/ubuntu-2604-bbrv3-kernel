@@ -5,20 +5,25 @@ name: VM acceptance
 # for the installer's boot-time verification. The install scenario expects the
 # trial boot to pass; the fallback scenario makes the trial panic and expects
 # the VM to return to its first kernel by itself; the restore scenario passes
-# the trial and then lets the installer restore the official kernel. It runs
-# when the installer or the VM test changes; the release workflow runs the
-# install scenario before it publishes a new kernel.
+# the trial and then lets the installer restore the official kernel; the menu
+# scenario boots through UEFI, installs the release before the latest with
+# the installer from GitHub, strips the official kernel and drives the menu
+# in a pseudo-terminal through an upgrade, a fallback install and a cleanup.
+# It runs when the installer or the VM test changes; the release workflow
+# runs the install scenario before it publishes a new kernel.
 on:
   workflow_dispatch:
   push:
     paths:
       - installer/**
       - tests/vm-*.sh
+      - tests/vm-menu-driver.py
       - .github/workflows/vm-acceptance.yml
   pull_request:
     paths:
       - installer/**
       - tests/vm-*.sh
+      - tests/vm-menu-driver.py
       - .github/workflows/vm-acceptance.yml
 
 permissions: {}
@@ -37,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [install, fallback, restore]
+        scenario: [install, fallback, restore, menu]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -59,14 +64,20 @@ jobs:
           kernel_release="${image_package#linux-image-unsigned-}"
           printf 'KERNEL_RELEASE=%s\n' "$kernel_release" >> "$GITHUB_ENV"
           printf '使用已发布的 %s（%s）做虚拟机安装与重启验收。\n' "$tag" "$kernel_release" >> "$GITHUB_STEP_SUMMARY"
+          # The menu scenario starts from the release before the latest one.
+          earlier_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" --jq \
+            '[.[] | select(.draft == false and .prerelease == false and (.tag_name | test("^ubuntu-26\\.04-bbrv3-")))] | .[1].tag_name // ""')"
+          [[ "$earlier_tag" =~ ^ubuntu-26\.04-bbrv3-[0-9.]+-[0-9.]+-p[1-9][0-9]*$ && "$earlier_tag" != "$tag" ]]
+          printf 'EARLIER_TAG=%s\n' "$earlier_tag" >> "$GITHUB_ENV"
 
       - name: Install QEMU and the Ubuntu cloud image keyring
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
+          # ovmf is the UEFI firmware for the menu scenario.
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 qemu-utils ubuntu-cloudimage-keyring
+            qemu-system-x86 qemu-utils ubuntu-cloudimage-keyring ovmf
 
       - name: Let QEMU use KVM when the runner provides it
         shell: bash
@@ -82,7 +93,7 @@ jobs:
         env:
           SCENARIO: ${{ matrix.scenario }}
         shell: bash
-        run: bash tests/vm-install-reboot.sh release "$KERNEL_RELEASE" "$SCENARIO"
+        run: bash tests/vm-install-reboot.sh release "$KERNEL_RELEASE" "$SCENARIO" "$EARLIER_TAG"
 
       - name: Preserve VM console log
         if: always()
