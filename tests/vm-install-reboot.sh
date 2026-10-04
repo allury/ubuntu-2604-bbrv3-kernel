@@ -233,7 +233,7 @@ failure="${stopped_reason:-the VM stopped without passing the $scenario scenario
 # the kernel interleave on the console.
 guest_log="$(LC_ALL=C sed -n '/--- end of the installation log ---/,$p' "$console_log" |
   sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[^[:print:]\t]//g' |
-  grep -v -e 'cloud-init\[' -e '^\[ *[0-9][0-9.]*\]' -e '^[[:space:]]*$' | head -n 30 | cut -c1-120 || true)"
+  grep -v -e 'cloud-init\[' -e '^\[ *[0-9][0-9.]*\]' -e '^[[:space:]]*$' | tail -n 30 | cut -c1-120 || true)"
 console_tail="$(LC_ALL=C sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[^[:print:]\t]//g' "$console_log" |
   grep -v '^[[:space:]]*$' | tail -n "$([[ -n "$guest_log" ]] && echo 8 || echo 25)" | cut -c1-160 || true)"
 if [[ -n "$guest_log" ]]; then
