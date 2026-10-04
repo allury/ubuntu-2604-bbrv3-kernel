@@ -80,6 +80,12 @@ install -m 0644 "$repo_root/installer/install.sh" "$work_dir/http/install.sh"
 install -m 0644 "$repo_root/tests/vm-guest-install.sh" "$work_dir/http/vm-guest-install.sh"
 install -m 0644 "$repo_root/tests/vm-network-test.py" "$work_dir/http/vm-network-test.py"
 install -m 0644 "$repo_root/tests/vm-menu-driver.py" "$work_dir/http/vm-menu-driver.py"
+# The menu scenario's installer queries GitHub from the shared runner
+# address; a token keeps it clear of the anonymous rate limit. The seed
+# server listens on the host's loopback only.
+if [[ "$scenario" == menu && -n "${GITHUB_TOKEN:-}" ]]; then
+  (umask 077 && printf '%s' "$GITHUB_TOKEN" > "$work_dir/http/github-token")
+fi
 printf 'instance-id: bbrv3-acceptance\nlocal-hostname: bbrv3-acceptance\n' > "$work_dir/http/meta-data"
 : > "$work_dir/http/vendor-data"
 # bootcmd runs before network-online.target, which the apt-daily jobs wait
@@ -223,8 +229,19 @@ if [[ "$passed" == true ]]; then
   exit 0
 fi
 failure="${stopped_reason:-the VM stopped without passing the $scenario scenario}"
+# The guest's own log tail, without the boot messages that cloud-init and
+# the kernel interleave on the console.
+guest_log="$(LC_ALL=C sed -n '/--- end of the installation log ---/,$p' "$console_log" |
+  sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[^[:print:]\t]//g' |
+  grep -v -e 'cloud-init\[' -e '^\[ *[0-9][0-9.]*\]' -e '^[[:space:]]*$' | head -n 30 | cut -c1-120 || true)"
 console_tail="$(LC_ALL=C sed -E 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/[^[:print:]\t]//g' "$console_log" |
-  grep -v '^[[:space:]]*$' | tail -n 25 | cut -c1-160 || true)"
+  grep -v '^[[:space:]]*$' | tail -n "$([[ -n "$guest_log" ]] && echo 8 || echo 25)" | cut -c1-160 || true)"
+if [[ -n "$guest_log" ]]; then
+  summary="$summary
+
+Guest log:
+$guest_log"
+fi
 annotate error "VM acceptance ($scenario) failed" "$failure.
 $summary
 

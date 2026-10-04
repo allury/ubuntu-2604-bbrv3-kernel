@@ -145,6 +145,14 @@ if [[ "$scenario" == menu ]]; then
   install -d /usr/local/lib/bbrv3-acceptance
   curl -fsS "$base_url/vm-menu-driver.py" -o /usr/local/lib/bbrv3-acceptance/menu-driver.py
   [[ -d /sys/firmware/efi ]] || fail 'the menu scenario should boot through UEFI'
+  # The runner's address is shared, and GitHub limits anonymous API requests
+  # per address; the installer uses a token when the host offers one.
+  if curl -fsS "$base_url/github-token" -o "$acceptance_dir/github-token" 2>/dev/null; then
+    chmod 0600 "$acceptance_dir/github-token"
+  fi
+  api_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+    https://api.github.com/repos/allury/ubuntu-2604-bbrv3-kernel/releases/latest || true)"
+  phase "an anonymous GitHub API request answers HTTP $api_status"
 fi
 
 if [[ "$scenario" == network ]]; then
@@ -237,6 +245,8 @@ case "$scenario" in
   menu)
     driver=(python3 /usr/local/lib/bbrv3-acceptance/menu-driver.py /var/log/bbrv3-acceptance-menu.log
       /root/bbrv3-installer.sh)
+    GITHUB_TOKEN="$(cat "$acceptance/github-token" 2>/dev/null || true)"
+    export GITHUB_TOKEN
     installed() {
       [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" == [ih]i* ]]
     }
@@ -401,7 +411,8 @@ console "VM_INSTALL_READY: $(date -u +%H:%M:%S)"
 if [[ "$scenario" == menu ]]; then
   # The installer itself installs the earlier release from GitHub, as on a
   # server. Without a terminal it installs instead of showing the menu.
-  bash /root/bbrv3-installer.sh install --tag "$earlier_tag" --reboot
+  GITHUB_TOKEN="$(cat "$acceptance_dir/github-token" 2>/dev/null || true)" \
+    bash /root/bbrv3-installer.sh install --tag "$earlier_tag" --reboot
   phase "installer finished; rebooting into the trial of $earlier_tag"
 elif [[ "$scenario" != fallback ]]; then
   bash .installer-runtime/install-bbrv3.sh install --reboot

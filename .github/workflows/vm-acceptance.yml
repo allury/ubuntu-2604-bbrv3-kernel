@@ -92,6 +92,8 @@ jobs:
       - name: Install the release with the installer logic and reboot
         env:
           SCENARIO: ${{ matrix.scenario }}
+          # For the menu scenario's GitHub queries from the shared runner address.
+          GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: bash tests/vm-install-reboot.sh release "$KERNEL_RELEASE" "$SCENARIO" "$EARLIER_TAG"
 

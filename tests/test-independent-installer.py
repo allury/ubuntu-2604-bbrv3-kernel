@@ -108,6 +108,21 @@ class InstallerTests(unittest.TestCase):
                      ["install", "--yes"], ["bogus"], ["restore", "--no-boot-once"]):
             self.assertEqual(bash(code, *args).returncode, 19, args)
 
+    def test_github_token_is_optional(self):
+        function = "github_api() {" + TEXT.split("github_api() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        code = "set -euo pipefail\ncurl() { printf '%s\\n' \"$@\"; }\n" + function + "github_api https://api.github.com/x"
+        without = {key: value for key, value in os.environ.items() if key != "GITHUB_TOKEN"}
+        anonymous = subprocess.run(["bash", "-c", code], capture_output=True, text=True, timeout=10, env=without)
+        self.assertEqual(anonymous.returncode, 0, anonymous.stderr)
+        self.assertIn("https://api.github.com/x", anonymous.stdout.splitlines())
+        self.assertNotIn("Authorization", anonymous.stdout)
+        with_token = subprocess.run(["bash", "-c", code], capture_output=True, text=True, timeout=10,
+                                    env=dict(without, GITHUB_TOKEN="secret"))
+        self.assertEqual(with_token.returncode, 0, with_token.stderr)
+        self.assertIn("Authorization: Bearer secret", with_token.stdout.splitlines())
+        # Only the API requests carry the token, never the asset downloads.
+        self.assertEqual(TEXT.count("github_api \""), 2)
+
     def test_help_needs_no_root(self):
         result = subprocess.run(["bash", str(ROOT / "installer/install.sh"), "--help"],
                                 capture_output=True, text=True, timeout=10)

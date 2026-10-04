@@ -14,6 +14,18 @@ die() {
   exit 1
 }
 
+# Fetch a GitHub API URL. GITHUB_TOKEN, when set, lifts the low limit on
+# anonymous requests that a shared address can run into. Only API requests
+# carry it, never the asset downloads.
+github_api() {
+  local auth=()
+  [[ -z "${GITHUB_TOKEN:-}" ]] || auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+  curl --fail --location --silent --show-error --retry 3 --connect-timeout 20 --max-time "${2:-120}" \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    "${auth[@]}" "$1"
+}
+
 usage() {
   cat <<USAGE
 用法：
@@ -30,6 +42,8 @@ usage() {
   sudo bash $0 restore [--yes] [--reboot]
       恢复官方内核并停用 BBRv3。
 --yes 跳过确认，供脚本使用。
+与他人共用出口 IP 时，GitHub 可能限制匿名查询；设置环境变量 GITHUB_TOKEN 即可，
+例如 sudo GITHUB_TOKEN=... bash $0。
 USAGE
 }
 
@@ -121,10 +135,7 @@ if [[ "$action" != install ]]; then
   # Print the latest stable release as "tag kernel-release megabytes", or
   # nothing when GitHub cannot be reached.
   latest_release() {
-    curl --fail --location --silent --max-time 15 \
-      -H 'Accept: application/vnd.github+json' \
-      -H 'X-GitHub-Api-Version: 2022-11-28' \
-      "https://api.github.com/repos/$repository/releases/latest" 2>/dev/null |
+    github_api "https://api.github.com/repos/$repository/releases/latest" 15 2>/dev/null |
       python3 -c '
 import json, re, sys
 release = json.load(sys.stdin)
@@ -260,10 +271,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl --fail --location --silent --show-error --retry 3 --connect-timeout 20 --max-time 120 \
-  -H 'Accept: application/vnd.github+json' \
-  -H 'X-GitHub-Api-Version: 2022-11-28' \
-  "$api_url" > "$download_dir/release.json"
+github_api "$api_url" > "$download_dir/release.json"
 
 python3 - "$download_dir/release.json" "$download_dir" "$repository" "$requested_tag" <<'PY'
 import json
