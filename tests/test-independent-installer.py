@@ -1,6 +1,7 @@
 """Exercise the actual embedded shell branches without installing or rebooting."""
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import types
@@ -107,6 +108,53 @@ class InstallerTests(unittest.TestCase):
         for args in (["status", "--yes"], ["clean", "--tag", "x"], ["fallback", "--reboot"],
                      ["install", "--yes"], ["bogus"], ["restore", "--no-boot-once"]):
             self.assertEqual(bash(code, *args).returncode, 19, args)
+
+    def test_secure_boot_check(self):
+        block = "if [[ -d /sys/firmware/efi ]]; then" + INNER.split(
+            "if [[ -d /sys/firmware/efi ]]; then", 1)[1].split("\nfor file in SHA256SUMS", 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            tools = root / "bin"
+            tools.mkdir()
+            for name in ("grep", "ls", "od", "tr"):
+                (tools / name).symlink_to(shutil.which(name))
+            efi = root / "efi"
+            code = ("set -euo pipefail\ndie() { printf '%s' \"$*\" >&2; exit 19; }\n" +
+                    block.replace("/sys/firmware/efi", str(efi)) + "\necho passed")
+
+            def check(mokutil=None, variable=None, other_variable=False, uefi=True):
+                shutil.rmtree(efi, ignore_errors=True)
+                (tools / "mokutil").unlink(missing_ok=True)
+                if uefi:
+                    (efi / "efivars").mkdir(parents=True)
+                    if other_variable:
+                        (efi / "efivars/BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c").write_bytes(b"\x07\0\0\0\0\0")
+                    if variable is not None:
+                        (efi / "efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c").write_bytes(
+                            b"\x06\0\0\0" + bytes([variable]))
+                if mokutil is not None:
+                    text, status = mokutil
+                    (tools / "mokutil").write_text(f"#!/bin/sh\nprintf '%s\\n' \"{text}\"\nexit {status}\n")
+                    (tools / "mokutil").chmod(0o755)
+                result = subprocess.run(["/bin/bash", "-c", code], capture_output=True, text=True, timeout=10,
+                                        env={"PATH": str(tools)})
+                return result.returncode, result.stdout + result.stderr
+
+            self.assertEqual(check(mokutil=("SecureBoot disabled", 0)), (0, "passed\n"))
+            self.assertEqual(check(mokutil=("SecureBoot enabled", 0))[0], 19)
+            # Firmware without Secure Boot boots unsigned kernels.
+            self.assertEqual(check(mokutil=("This system doesn't support Secure Boot", 255)), (0, "passed\n"))
+            status, output = check(mokutil=("EFI variables are not supported on this system", 255))
+            self.assertEqual(status, 19)
+            self.assertIn("Cannot determine Secure Boot state", output)
+            # Without mokutil the firmware variable decides.
+            self.assertEqual(check(variable=0), (0, "passed\n"))
+            status, output = check(variable=1)
+            self.assertEqual(status, 19)
+            self.assertIn("Unsigned release requires Secure Boot disabled", output)
+            self.assertEqual(check(other_variable=True), (0, "passed\n"))
+            self.assertEqual(check()[0], 19)
+            self.assertEqual(check(uefi=False), (0, "passed\n"))
 
     def test_github_token_is_optional(self):
         function = "github_api() {" + TEXT.split("github_api() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"

@@ -1033,9 +1033,32 @@ dpkg_audit="$(dpkg --audit 2>&1 || true)"
 }
 apt-get check
 if [[ -d /sys/firmware/efi ]]; then
-  command -v mokutil >/dev/null || die 'Missing prerequisite for the EFI Secure Boot check: mokutil'
-  sb="$(mokutil --sb-state)" || die 'Cannot determine Secure Boot state.'
-  grep -qi 'SecureBoot disabled' <<<"$sb" || die 'Unsigned release requires Secure Boot disabled; signed installations need a separate procedure.'
+  if command -v mokutil >/dev/null; then
+    # mokutil fails, saying so, on firmware without Secure Boot.
+    sb="$(mokutil --sb-state 2>&1 || true)"
+  else
+    # Read what mokutil reads: four attribute bytes, then 1 while Secure
+    # Boot is enforced. Firmware without Secure Boot has no such variable.
+    sb_variable=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+    if [[ -r "$sb_variable" ]]; then
+      case "$(od -An -t u1 -j 4 -N 1 "$sb_variable" | tr -d '[:space:]')" in
+        0) sb='SecureBoot disabled' ;;
+        1) sb='SecureBoot enabled' ;;
+        *) sb='' ;;
+      esac
+    elif [[ -n "$(ls -A /sys/firmware/efi/efivars 2>/dev/null)" ]]; then
+      sb="This system doesn't support Secure Boot"
+    else
+      sb=''
+    fi
+  fi
+  # Firmware without Secure Boot boots an unsigned kernel just as firmware
+  # with Secure Boot turned off does.
+  if grep -qi 'SecureBoot enabled' <<<"$sb"; then
+    die 'Unsigned release requires Secure Boot disabled; signed installations need a separate procedure.'
+  elif ! grep -Eqi "SecureBoot disabled|doesn't support Secure Boot" <<<"$sb"; then
+    die "Cannot determine Secure Boot state.${sb:+ mokutil said: $sb}"
+  fi
 fi
 for file in SHA256SUMS enable-bbrv3.sh bbrv3.sysctl.conf; do
   [[ -f "$file" ]] || die "Run in the release directory; missing $file"
